@@ -11,6 +11,7 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
+from typing_extensions import TypeIs
 
 from langgraph_openai_serve.api.responses.schemas import (
     ResponseCustomToolCallInput,
@@ -164,6 +165,11 @@ def _input_message(item: ResponseInputMessage) -> BaseMessage:
             return SystemMessage(content=content)
 
 
+def _is_tool_call(parsed: ToolCall | InvalidToolCall) -> TypeIs[ToolCall]:
+    """Narrow a decoded function call to a valid tool call."""
+    return parsed.get("type") == "tool_call"
+
+
 def _tool_call_message(
     calls: list[ResponseFunctionCallInput | ResponseCustomToolCallInput],
 ) -> AIMessage:
@@ -183,7 +189,7 @@ def _tool_call_message(
         parsed = decode_function_call(
             name=call.name, arguments=call.arguments, call_id=call.call_id
         )
-        if parsed["type"] == "tool_call":
+        if _is_tool_call(parsed):
             tool_calls.append(parsed)
         else:
             invalid_tool_calls.append(parsed)
@@ -209,7 +215,14 @@ def _input_content(
             (
                 {"type": "text", "text": part.text}
                 if isinstance(part, ResponseInputText)
-                else {"type": "file", "file": {"file_id": part.file_id}}
+                else {
+                    "type": "file",
+                    "file": part.model_dump(
+                        mode="json",
+                        include={"file_id", "file_data", "filename"},
+                        exclude_none=True,
+                    ),
+                }
             )
             for part in content
         ],

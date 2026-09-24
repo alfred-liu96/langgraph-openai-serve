@@ -220,14 +220,14 @@ async def test_unsupported_chat_fields_are_rejected(
                                 "type": "file",
                                 "file": {
                                     "file_id": "file-test",
-                                    "file_data": "data:application/pdf;base64,AA==",
+                                    "file_extra": True,
                                 },
                             }
                         ],
                     }
                 ],
             },
-            "file_data",
+            "file_extra",
             id="file-reference",
         ),
         pytest.param(

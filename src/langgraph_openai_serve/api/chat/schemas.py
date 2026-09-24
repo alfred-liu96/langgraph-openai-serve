@@ -56,13 +56,23 @@ class ChatCompletionTextContentPart(_ChatRequestModel):
 
 
 class ChatCompletionFileReference(_ChatRequestModel):
-    """One uploaded file selected by its opaque Files API ID."""
+    """One uploaded file, referenced by its Files API ID or inlined as base64."""
 
-    file_id: str
+    file_id: str | None = None
+    file_data: str | None = None
+    filename: str | None = None
+
+    @model_validator(mode="after")
+    def _require_file_id_or_file_data(self) -> "ChatCompletionFileReference":
+        """Reject a file reference that selects no file content."""
+        if self.file_id is None and self.file_data is None:
+            msg = "file.file_id or file.file_data is required"
+            raise ValueError(msg)
+        return self
 
 
 class ChatCompletionFileContentPart(_ChatRequestModel):
-    """One native Chat Completions file-ID content part."""
+    """One native Chat Completions file content part."""
 
     type: Literal["file"]
     file: ChatCompletionFileReference

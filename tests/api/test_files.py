@@ -62,8 +62,35 @@ async def test_chat_file_id_reaches_graph_without_files_routes() -> None:
         )
         files_response = await http_client.get("/v1/files")
 
+        inlined = await client.chat.completions.create(
+            model="files",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "file",
+                            "file": {
+                                "file_data": "data:application/pdf;base64,AA==",
+                                "filename": "a.pdf",
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+
     assert json.loads(response.choices[0].message.content or "null") == [
         {"type": "text", "text": "Read this file."},
         {"type": "file", "file": {"file_id": "file-central"}},
     ]
     assert files_response.status_code == HTTPStatus.NOT_FOUND
+    assert json.loads(inlined.choices[0].message.content or "null") == [
+        {
+            "type": "file",
+            "file": {
+                "file_data": "data:application/pdf;base64,AA==",
+                "filename": "a.pdf",
+            },
+        }
+    ]

@@ -176,7 +176,11 @@ async def test_openai_api_schema_describes_mounted_api(
         "file",
         "text",
     }
-    assert set(components["ChatCompletionFileReference"]["properties"]) == {"file_id"}
+    assert set(components["ChatCompletionFileReference"]["properties"]) == {
+        "file_data",
+        "file_id",
+        "filename",
+    }
 
 
 def test_openai_api_prefix_settings_normalizes_trailing_slash() -> None:

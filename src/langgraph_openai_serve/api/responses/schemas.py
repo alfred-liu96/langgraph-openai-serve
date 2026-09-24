@@ -3,7 +3,15 @@
 from collections.abc import Mapping
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Discriminator, Field, JsonValue, Tag
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    JsonValue,
+    Tag,
+    model_validator,
+)
 
 from langgraph_openai_serve.api.metadata import (
     OPENAI_METADATA_MAX_PAIRS,
@@ -26,10 +34,20 @@ class ResponseInputText(_ResponsesRequestModel):
 
 
 class ResponseInputFile(_ResponsesRequestModel):
-    """One file stored in the configured OpenAI Files service."""
+    """One file, referenced by its Files ID or inlined as base64 ``file_data``."""
 
     type: Literal["input_file"]
-    file_id: Annotated[str, Field(min_length=1)]
+    file_id: str | None = None
+    file_data: str | None = None
+    filename: str | None = None
+
+    @model_validator(mode="after")
+    def _require_file_id_or_file_data(self) -> "ResponseInputFile":
+        """Reject a file input that selects no file content."""
+        if self.file_id is None and self.file_data is None:
+            msg = "file_id or file_data is required"
+            raise ValueError(msg)
+        return self
 
 
 ResponseInputContentPart: TypeAlias = Annotated[

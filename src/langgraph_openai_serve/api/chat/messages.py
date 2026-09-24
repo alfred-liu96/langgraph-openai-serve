@@ -11,6 +11,7 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
+from typing_extensions import TypeIs
 
 from langgraph_openai_serve.api.chat.schemas import (
     ChatCompletionMessageContent,
@@ -34,8 +35,13 @@ def _langchain_content(
         return content
     return cast(
         "list[str | dict[Any, Any]]",
-        [part.model_dump(mode="json") for part in content],
+        [part.model_dump(mode="json", exclude_none=True) for part in content],
     )
+
+
+def _is_tool_call(parsed: ToolCall | InvalidToolCall) -> TypeIs[ToolCall]:
+    """Narrow a decoded function call to a valid tool call."""
+    return parsed.get("type") == "tool_call"
 
 
 def convert_to_lc_messages(
@@ -99,7 +105,7 @@ def _assistant_message(message: ChatCompletionRequestMessage) -> AIMessage:
                 arguments=call.function.arguments or "{}",
                 call_id=call.id,
             )
-            if parsed["type"] == "tool_call":
+            if _is_tool_call(parsed):
                 tool_calls.append(parsed)
             else:
                 invalid_tool_calls.append(parsed)

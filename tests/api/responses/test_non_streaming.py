@@ -194,12 +194,38 @@ async def test_file_id_input_uses_the_protocol_neutral_graph_shape(
         {"type": "file", "file": {"file_id": "file_report"}},
     ]
 
+    await openai_client.responses.create(
+        model="test",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "file_data": "data:application/pdf;base64,AA==",
+                        "filename": "report.pdf",
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert received_messages[1][0].content == [
+        {
+            "type": "file",
+            "file": {
+                "file_data": "data:application/pdf;base64,AA==",
+                "filename": "report.pdf",
+            },
+        }
+    ]
+
 
 @pytest.mark.parametrize(
     "file_part",
     [
         {"file_url": "https://example.com/a.pdf"},
-        {"file_data": "data:application/pdf;base64,AA=="},
+        {"file_data": None},
     ],
 )
 async def test_unimplemented_file_sources_are_rejected(
