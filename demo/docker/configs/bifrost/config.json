@@ -3,7 +3,12 @@
   "client": {
     "enforce_auth_on_inference": true,
     "header_filter_config": {
-      "allowlist": ["traceparent", "tracestate", "user-agent"]
+      "allowlist": [
+        "idempotency-key",
+        "traceparent",
+        "tracestate",
+        "user-agent"
+      ]
     }
   },
   "mcp": {
@@ -60,7 +65,7 @@
       {
         "id": "lgos-demo",
         "name": "LGOS demo clients",
-        "description": "Demo UI access to LGOS providers and read-only PostgreSQL MCP tools",
+        "description": "Demo UI access to LGOS providers, aigateway speech models, and read-only PostgreSQL MCP tools",
         "value": "env.BIFROST_DEMO_VIRTUAL_KEY",
         "is_active": true,
         "provider_configs": [
@@ -79,6 +84,15 @@
           {
             "provider": "lgos-files",
             "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "aigateway",
+            "allowed_models": [
+              "openai/gpt-4o-mini-transcribe",
+              "openai/gpt-4o-mini-tts"
+            ],
             "key_ids": ["*"],
             "weight": 1.0
           }
@@ -106,6 +120,8 @@
           "list_models": true,
           "responses": true,
           "responses_stream": true,
+          "responses_retrieve": true,
+          "responses_cancel": true,
           "passthrough": true,
           "passthrough_stream": true
         }
@@ -130,6 +146,8 @@
           "list_models": true,
           "responses": true,
           "responses_stream": true,
+          "responses_retrieve": true,
+          "responses_cancel": true,
           "passthrough": true,
           "passthrough_stream": true
         }
@@ -157,6 +175,30 @@
           "file_retrieve": true,
           "file_delete": true,
           "file_content": true
+        }
+      }
+    },
+    "aigateway": {
+      "keys": [
+        {
+          "name": "aigateway",
+          "value": "env.AIGATEWAY_API_KEY",
+          "models": [
+            "openai/gpt-4o-mini-transcribe",
+            "openai/gpt-4o-mini-tts"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "https://aigateway.home.ilkerflix.com",
+        "allow_private_network": true
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "speech": true,
+          "transcription": true
         }
       }
     }

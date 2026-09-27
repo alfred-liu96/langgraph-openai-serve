@@ -13,9 +13,10 @@ package.
     the bundled Bifrost gateway's normalized
     `/openai/v1` route preserves the tested `user`, `input_file`,
     function-continuation, final-answer `phase`, and multiple commentary
-    `phase` and `store: false` contracts. Two narrower gaps remain: normalized
-    model detail does not expose LGOS extensions, and normalized errors replace
-    the upstream OpenAI `type`, `param`, and `code`. The raw
+    `phase` and `store: false` contracts, plus the upstream error `type` and
+    `param`. Normalized model detail does not expose LGOS extensions, and
+    governance rejects an unknown provider-qualified model with its own
+    `model_blocked` error before LGOS sees the request. The raw
     `/openai_passthrough/v1` route
     preserves the successful-request contracts, while governance rejects an
     unknown model before its upstream OpenAI error can pass through.
@@ -34,6 +35,7 @@ Bifrost exposes each service as a custom provider:
 | `lgos-a` | `lgos-demo-api-a:8000` | `lgos-a/simple-graph` |
 | `lgos-b` | `lgos-demo-api-b:8000` | `lgos-b/simple-graph` |
 | `lgos-files` | `lgos-files-api:8000` | Files only |
+| `aigateway` | `aigateway.home.ilkerflix.com` | `aigateway/openai/gpt-4o-mini-tts`; audio only |
 
 It also exposes the `LGOS PostgreSQL Reports` Virtual MCP at
 `http://localhost:3000/mcp/lgos-postgres`. This named bundle selects six tools
@@ -68,11 +70,21 @@ print(model_ids)
 ```
 
 Bifrost's catalog owns the provider-qualified IDs. With Bifrost selected, the
-UIs split an ID and send its prefix as `x-model-provider`. Inference goes to
-native `/openai/v1/responses`; only provider-specific model list and retrieval
-go to `/openai_passthrough/v1`, so LGOS descriptions and client settings
-survive unchanged. The UI adapter discovers providers from the aggregate
-catalog; it does not contain a provider list.
+UIs send a catalog ID such as `lgos-b/simple-graph` unchanged to native
+`/openai/v1/responses`. Bifrost selects the provider from that prefix and
+forwards `simple-graph` upstream. Only provider-specific model list and
+retrieval go to `/openai_passthrough/v1` with the prefix in
+`x-model-provider`, so LGOS descriptions and client settings survive unchanged.
+
+!!! warning "Bifrost ignores `x-model-provider` on Responses"
+
+    Only the pass-through, Files, batch, and video routes read the header. A
+    bare `simple-graph` with `x-model-provider: lgos-b` is spread across every
+    provider the virtual key allows for that model, so keep the provider in the
+    model ID.
+
+The UI adapter discovers providers from the aggregate catalog; it does not
+contain a provider list.
 
 Select the Bifrost values in the shared
 [`.env.example`](https://github.com/ilkersigirci/langgraph-openai-serve/blob/main/demo/.env.example)
@@ -83,8 +95,9 @@ and model-header routing from that explicit configuration. Host-side commands
 must instead receive a URL reachable from the host.
 
 The bundled gateway requires `OPENAI_GATEWAY_API_KEY` on inference, Files,
-catalog, and MCP requests. Bifrost loads it as one native virtual key whose
-provider policies allow only `lgos-a`, `lgos-b`, and `lgos-files`; the key is
+catalog, speech, and MCP requests. Bifrost loads it as one native virtual key whose
+provider policies allow `lgos-a`, `lgos-b`, and `lgos-files`, plus only the
+two speech models on `aigateway`. The key is
 attached to only the fixed PostgreSQL Virtual MCP. Replace the demo value
 before exposing the gateway and retain Bifrost's required `sk-bf-` prefix.
 
@@ -117,15 +130,30 @@ operations and targets the standalone S3-backed demo Files service. Upstream
 base URLs omit `/v1`, and private-network access is enabled for the Compose
 network.
 
-Enable both `responses` and `responses_stream` explicitly under each graph
-provider's `allowed_requests`. Bifrost loads this configuration at startup, so
+Enable `responses`, `responses_stream`, `responses_retrieve`, and
+`responses_cancel` explicitly under each custom graph provider's
+`allowed_requests`. `aigateway` enables only `transcription` and `speech` and
+reaches the private-network aigateway with `AIGATEWAY_API_KEY`. Bifrost
+reads no environment reference in `base_url`, so the aigateway URL is literal
+in `config.json`. Bifrost loads this configuration at startup, so
 restart the service after changing it. The graph providers do not enable Chat
 Completions or Responses-to-Chat fallback.
 
-The client header allowlist forwards `traceparent`, `tracestate`, and
-`user-agent` through managed Responses requests. This preserves distributed
-trace context and the originating UI's identity at LGOS. See the
-[OpenTelemetry guide](opentelemetry.md#signal-ownership).
+The client header allowlist forwards `Idempotency-Key`, `traceparent`,
+`tracestate`, and `user-agent` through managed Responses requests. The first
+supports safe background-create retries; the others preserve distributed trace
+context and the originating UI's identity at LGOS. See the [OpenTelemetry
+guide](opentelemetry.md#signal-ownership).
+
+## Background Responses
+
+The UIs create a background Response through the selected model's provider
+prefix. Retrieve and cancel carry no model, so the UIs send the same provider
+in Bifrost's `provider` query parameter; without it, Bifrost routes them to its
+built-in `openai` provider, which the demo does not configure. See
+[Background Mock](graphs/background-mock.md) for startup and
+[Run Responses In The Background](../how-to-guides/background-responses.md) for
+the lifecycle contract.
 
 The gateway uses `DUMMY` only for its private upstream connections because LGOS
 authentication is not enabled. This is separate from the required client-facing
@@ -137,7 +165,7 @@ The bundled configuration therefore uses an ephemeral SQLite database at
 `/tmp/config.db`; the checked-in JSON remains the source of truth on every
 restart, matching the demo's otherwise stateless gateway configuration.
 The JSON declares the Virtual MCP's key assignment. On a fresh store, Bifrost
-2.1.1 reconciles that bundle before its file-defined key, so Compose repeats
+reconciles that bundle before its file-defined key, so Compose repeats
 the idempotent attachment after startup and keeps the health check red until it
 is visible. The configuration also sets `disable_auto_tool_inject=true`, so MCP
 tools reach a model only when Chainlit or Open WebUI supplies their schemas;
@@ -151,13 +179,13 @@ streaming Response. Providers that do not report usage produce no usage object.
 
 Open WebUI and Chainlit use Bifrost native Responses when
 `OPENAI_GATEWAY_TYPE=bifrost`, discover provider-qualified models from its
-aggregate catalog, and add `x-model-provider` to native inference and
-catalog-detail requests. Neither client contains a provider list or uses raw
-pass-through for inference.
+aggregate catalog, send those IDs unchanged to native inference, and add
+`x-model-provider` only to catalog-detail requests. Neither client contains a
+provider list or uses raw pass-through for inference.
 
 Run `just demo/test-bifrost --editable` after starting the gateway.
 The command requires the native Responses data-plane contracts to pass, records
-the normalized model-detail and error-metadata gaps as strict expected failures,
+the normalized model-detail gap as a strict expected failure,
 and then requires the raw pass-through OpenAI SDK suite to pass except for its
 strict unknown-model governance expectation.
 

@@ -1,7 +1,10 @@
 """Responses API helpers for Open WebUI models."""
 
+import asyncio
 import json as responses_json
-from collections.abc import Mapping, Sequence
+import logging
+import uuid
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Union
 
 import openai.types.responses as response_types
@@ -21,7 +24,6 @@ from openai.types.responses import (
 from openai.types.responses.response_output_text import AnnotationURLCitation
 from pydantic import TypeAdapter
 
-from .api import _model_request
 from .contracts import (
     DISPLAY_FILE_TOOL_NAME,
     PACKAGE_VERSION_TOOL_NAME,
@@ -39,7 +41,7 @@ from .gateway import MCP_GATEWAY_ID
 
 
 def _patch_legacy_custom_tool_output() -> None:
-    """Fill the response-output omission in OpenAI 2.29 used by Open WebUI."""
+    """Fill the response-output omission in the OpenAI SDK shipped by Open WebUI."""
     if hasattr(response_types, "ResponseCustomToolCallOutputItem"):
         return
 
@@ -78,6 +80,8 @@ PACKAGE_VERSION_TOOL: CustomToolParam = {
     "type": "custom",
     "name": PACKAGE_VERSION_TOOL_NAME,
 }
+ACTIVE_BACKGROUND_STATUSES = {"queued", "in_progress"}
+logger = logging.getLogger(__name__)
 
 
 def _responses_tools(
@@ -272,19 +276,18 @@ def _responses_request(
     metadata: dict[str, str] | None,
     user_id: str | None,
     *,
-    provider_routing: bool,
+    background: bool,
     tools: list[ToolParam],
     previous_response_id: str | None = None,
 ) -> dict[str, Any]:
     request = {
-        **_model_request(
-            model_id,
-            provider_routing=provider_routing,
-        ),
+        "model": model_id,
         "input": input_items,
-        "store": False,
+        "store": background,
         "tools": tools,
     }
+    if background:
+        request["background"] = True
     if metadata:
         request["metadata"] = metadata
     if user_id is not None:
@@ -292,6 +295,52 @@ def _responses_request(
     if previous_response_id is not None:
         request["previous_response_id"] = previous_response_id
     return request
+
+
+async def _background_response(
+    client: Any,
+    request: dict[str, Any],
+    on_status: Callable[[str], Awaitable[None]],
+    *,
+    provider_routing: bool,
+) -> Response:
+    """Create and poll one background Response with best-effort cancellation."""
+    client = client.with_options(max_retries=2)
+    background_request = dict(request)
+    idempotency_key = str(uuid.uuid4())
+    lifecycle_options: dict[str, Any] = {}
+    if provider_routing:
+        background_request["extra_headers"] = {"Idempotency-Key": idempotency_key}
+        # Retrieve and cancel carry no model; without this query parameter
+        # Bifrost routes them to its built-in openai provider.
+        provider = request["model"].partition("/")[0]
+        lifecycle_options["extra_query"] = {"provider": provider}
+    else:
+        background_request["extra_body"] = {
+            "extra_headers": {"Idempotency-Key": idempotency_key}
+        }
+    response = await client.responses.create(**background_request)
+    previous_status = None
+    try:
+        while response.status in ACTIVE_BACKGROUND_STATUSES:
+            if response.status != previous_status:
+                await on_status(response.status)
+                previous_status = response.status
+            await asyncio.sleep(1)
+            response = await client.responses.retrieve(response.id, **lifecycle_options)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(
+                client.responses.cancel(response.id, **lifecycle_options)
+            )
+        except Exception:
+            logger.warning(
+                "Background response cancellation failed for %s",
+                response.id,
+                exc_info=True,
+            )
+        raise
+    return response
 
 
 def _responses_final_text(response: Response) -> str:

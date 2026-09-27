@@ -78,9 +78,9 @@ for networking, Files routing, and SSO ownership.
 
 Current verification exposes narrower upstream normalization limitations.
 The bundled Bifrost's normalized `/openai/v1` route preserves the tested native
-Responses fields, file input, commentary `phase`, and continuation, but not
-LGOS model-detail extensions, upstream error metadata, or the requested
-`store: false` value in the returned Response. Bifrost's raw pass-through
+Responses fields, file input, commentary `phase`, continuation, `store: false`,
+and upstream error `type` and `param`, but not LGOS model-detail extensions.
+Bifrost's raw pass-through
 preserves successful-request contracts, while virtual-key governance rejects
 the unknown-model error case before pass-through. The bundled LiteLLM preserves
 native streaming and commentary, and records successful managed Responses
@@ -91,6 +91,15 @@ Bifrost's native Responses route according to `OPENAI_GATEWAY_TYPE`.
 Run `just demo/test-bifrost --editable` and
 `just demo/test-litellm --editable` for the current compatibility
 matrix.
+
+Polling-only background execution is optional. Select LiteLLM or Bifrost,
+enable `DEMO_API_BACKGROUND_ENABLED`, add `background` to `COMPOSE_PROFILES`,
+configure `HATCHET_CLIENT_TOKEN`, and run `just demo/compose`. Both UIs can then
+run `advanced-graph`, the model-free `background-mock`, or the deterministic
+[`background-interrupt`](../docs/demo/graphs/background-interrupt.md) review flow
+in the background. Run
+`just demo/test-background-gateway --editable` and see the
+[background guide](../docs/how-to-guides/background-responses.md).
 
 Compose persists PostgreSQL, Bifrost, and Open WebUI state as ignored host bind
 mounts under `docker/volumes/`. Each service directory is tracked with a
@@ -142,8 +151,9 @@ Models:
 just demo/sync-openwebui
 ```
 
-The recipe runs the locked `ui/openwebui` project on the host. It uses
-`DEMO_GATEWAY_HOST_URL` with the shared `OPENAI_GATEWAY_API_KEY`, so the
+The recipe runs the locked `ui/openwebui` project on the host. It discovers
+models through `DEMO_GATEWAY_HOST_URL` with the shared `OPENAI_GATEWAY_API_KEY`
+and registers `OPENAI_GATEWAY_BASE_URL` as Open WebUI's MCP server, so the
 official Open WebUI image remains unchanged.
 
 Compose starts each selected service's dependencies. One API setup job
@@ -164,6 +174,7 @@ shown for the API processes, to overlay the parent LGOS checkout:
 ```bash
 just demo/api --editable
 just demo/api --editable --port 3005
+just demo/background-worker --editable
 just demo/files
 just demo/chainlit
 ```

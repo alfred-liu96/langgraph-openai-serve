@@ -1,5 +1,6 @@
 """Responses-only Open WebUI Function behavior."""
 
+import asyncio
 import base64
 import json
 import sys
@@ -10,7 +11,8 @@ from copy import deepcopy
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
+from uuid import UUID
 
 import httpx2
 import pytest
@@ -31,6 +33,7 @@ from openai.types.responses.response_output_text import AnnotationURLCitation
 from lgos_openwebui.bundle import bundle_function
 from lgos_openwebui.functions.generic import files as generic_files
 from lgos_openwebui.functions.generic import pipe as generic_pipe
+from lgos_openwebui.functions.generic import responses as generic_responses
 from lgos_openwebui.functions.generic.contracts import (
     OpenWebUIInvocation,
     OpenWebUIMessage,
@@ -172,6 +175,15 @@ def body(*, stream: bool) -> dict[str, object]:
     }
 
 
+def background_metadata(*, supported: bool = True) -> dict[str, object]:
+    fields = [{"key": "lgos_background", "type": "checkbox"}] if supported else []
+    return {
+        "chat_id": "thread-123",
+        "chat_variables": {"lgos_background": True},
+        "model": {"info": {"meta": {"chat_variables_schema": {"fields": fields}}}},
+    }
+
+
 def host_messages(messages: list[dict[str, Any]]) -> list[OpenWebUIMessage]:
     return OpenWebUIInvocation.from_host(
         body={"model": QUALIFIED_MODEL_ID, "messages": messages},
@@ -273,6 +285,11 @@ class FakeResponseStream:
 class FakeClient:
     def __init__(self, **responses: object) -> None:
         self.responses = SimpleNamespace(**responses)
+        self.max_retries = 0
+
+    def with_options(self, *, max_retries: int) -> "FakeClient":
+        self.max_retries = max_retries
+        return self
 
     async def __aenter__(self) -> "FakeClient":
         return self
@@ -281,8 +298,10 @@ class FakeClient:
         pass
 
 
-def install_client(monkeypatch: pytest.MonkeyPatch, **responses: object) -> None:
-    monkeypatch.setattr(generic_pipe, "_client", lambda **_: FakeClient(**responses))
+def install_client(monkeypatch: pytest.MonkeyPatch, **responses: object) -> FakeClient:
+    client = FakeClient(**responses)
+    monkeypatch.setattr(generic_pipe, "_client", lambda **_: client)
+    return client
 
 
 @pytest.fixture
@@ -562,6 +581,199 @@ async def test_non_streaming_request_uses_responses_and_final_answer_only(
     assert request["tools"] == []
 
 
+async def test_background_response_uses_polling_and_native_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_id = "resp_background"
+    queued = Response.model_construct(id=response_id, status="queued", output=[])
+    in_progress = Response.model_construct(
+        id=response_id,
+        status="in_progress",
+        output=[],
+    )
+    completed = final_response("Report ready.").model_copy(update={"id": response_id})
+    create = AsyncMock(return_value=queued)
+    retrieve = AsyncMock(side_effect=[in_progress, completed])
+    cancel = AsyncMock()
+    stream = Mock()
+    client = install_client(
+        monkeypatch,
+        create=create,
+        retrieve=retrieve,
+        cancel=cancel,
+        stream=stream,
+    )
+    monkeypatch.setattr(generic_responses.asyncio, "sleep", AsyncMock())
+    events = []
+
+    async def emit(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    result = await collect(
+        generic_pipe.Pipe().pipe(
+            body(stream=True),
+            __metadata__=background_metadata(),
+            __event_emitter__=emit,
+        )
+    )
+
+    assert result[0]["choices"][0]["delta"]["content"] == "Report ready."
+    request = create.await_args.kwargs
+    assert request["background"] is True
+    assert request["store"] is True
+    assert request["metadata"]["conversation_id"] == "thread-123"
+    assert "extra_headers" not in request
+    UUID(request["extra_body"]["extra_headers"]["Idempotency-Key"])
+    assert "lgos_settings" not in request["metadata"]
+    assert retrieve.await_args_list == [call(response_id), call(response_id)]
+    assert events == [
+        {
+            "type": "status",
+            "data": {"description": "Background response queued.", "done": False},
+        },
+        {
+            "type": "status",
+            "data": {
+                "description": "Background response in progress.",
+                "done": False,
+            },
+        },
+        {
+            "type": "status",
+            "data": {
+                "description": "Background response completed.",
+                "done": True,
+            },
+        },
+    ]
+    stream.assert_not_called()
+    cancel.assert_not_awaited()
+    assert client.max_retries == 2
+
+
+async def test_background_response_stays_on_its_bifrost_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_id = "resp_background"
+    create = AsyncMock(
+        return_value=Response.model_construct(
+            id=response_id,
+            status="queued",
+            output=[],
+        )
+    )
+    retrieve = AsyncMock(return_value=final_response("Report ready."))
+    client = FakeClient(create=create, retrieve=retrieve)
+    monkeypatch.setattr(generic_responses.asyncio, "sleep", AsyncMock())
+
+    await generic_responses._background_response(
+        client,
+        {"model": "lgos-b/background-mock"},
+        AsyncMock(),
+        provider_routing=True,
+    )
+
+    request = create.await_args.kwargs
+    assert request["model"] == "lgos-b/background-mock"
+    assert request["extra_headers"].keys() == {"Idempotency-Key"}
+    UUID(request["extra_headers"]["Idempotency-Key"])
+    assert "extra_body" not in request
+    retrieve.assert_awaited_once_with(response_id, extra_query={"provider": "lgos-b"})
+
+
+async def test_interrupt_answers_follow_the_background_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create = AsyncMock(return_value=final_response("Approved."))
+    install_client(monkeypatch, create=create)
+    ask_user = _interrupts_to_ask_user(RESPONSE_ID, [interrupt_call()])
+    request_body = body(stream=False)
+    request_body["messages"].extend(
+        [
+            {"role": "assistant", "content": None, "tool_calls": [ask_user]},
+            {
+                "role": "tool",
+                "tool_call_id": ask_user["id"],
+                "content": json.dumps(
+                    {
+                        "status": "answered",
+                        "answers": {"resume_0": {"type": "option", "option_index": 0}},
+                    }
+                ),
+            },
+        ]
+    )
+
+    await generic_pipe.Pipe().pipe(request_body, __metadata__=background_metadata())
+
+    request = create.await_args.kwargs
+    assert request["previous_response_id"] == RESPONSE_ID
+    assert request["background"] is True
+
+
+async def test_stale_background_setting_is_ignored_after_model_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create = AsyncMock(return_value=final_response("Foreground response."))
+    install_client(monkeypatch, create=create)
+    request_body = body(stream=False)
+    request_body["model"] = "generic.lgos-a/simple-graph"
+
+    result = await generic_pipe.Pipe().pipe(
+        request_body,
+        __metadata__=background_metadata(supported=False),
+    )
+
+    assert result == "Foreground response."
+    request = create.await_args.kwargs
+    assert request["store"] is False
+    assert "background" not in request
+    assert "lgos_settings" not in request["metadata"]
+
+
+@pytest.mark.parametrize(
+    ("model", "provider_routing", "lifecycle_options"),
+    [
+        ("lgos-a/background-mock", False, {}),
+        ("lgos-b/background-mock", True, {"extra_query": {"provider": "lgos-b"}}),
+    ],
+    ids=["litellm", "bifrost"],
+)
+async def test_background_response_is_cancelled_when_request_stops(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    provider_routing: bool,
+    lifecycle_options: dict[str, object],
+) -> None:
+    response_id = "resp_background"
+    cancel = AsyncMock()
+    client = FakeClient(
+        create=AsyncMock(
+            return_value=Response.model_construct(
+                id=response_id,
+                status="queued",
+                output=[],
+            )
+        ),
+        cancel=cancel,
+    )
+    monkeypatch.setattr(
+        generic_responses.asyncio,
+        "sleep",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await generic_responses._background_response(
+            client,
+            {"model": model},
+            AsyncMock(),
+            provider_routing=provider_routing,
+        )
+
+    cancel.assert_awaited_once_with(response_id, **lifecycle_options)
+
+
 @pytest.mark.parametrize(
     "settings",
     [Filter.UserValves(), Filter.UserValves(use_history=True, audience="beginner")],
@@ -599,25 +811,117 @@ async def test_uservalves_reach_responses_through_shared_pipe(
     assert request["input"] == [{"role": "user", "content": "Hello"}]
 
 
+RENDERED_DECLARATIONS = "<lgos-chat-variables>\nTrue\nexpert\n</lgos-chat-variables>"
+
+
+@pytest.mark.parametrize(
+    ("system", "expected_input"),
+    [
+        (RENDERED_DECLARATIONS, []),
+        (
+            f"{RENDERED_DECLARATIONS}\nBe brief.",
+            [{"role": "system", "content": "Be brief."}],
+        ),
+        (
+            f"{RENDERED_DECLARATIONS}\n{RENDERED_DECLARATIONS}\nBe brief.",
+            [{"role": "system", "content": "Be brief."}],
+        ),
+        (
+            "Be brief.\n<lgos-chat-variables>\nkept\n</lgos-chat-variables>",
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Be brief.\n<lgos-chat-variables>\nkept\n</lgos-chat-variables>"
+                    ),
+                }
+            ],
+        ),
+    ],
+    ids=["declarations-only", "chat-system-prompt", "tool-loop-repeat", "not-leading"],
+)
+async def test_rendered_chat_variable_declarations_never_reach_the_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    system: str,
+    expected_input: list[dict[str, str]],
+) -> None:
+    create = AsyncMock(return_value=final_response("Hello."))
+    install_client(monkeypatch, create=create)
+    request_body = body(stream=False)
+    request_body["messages"].insert(0, {"role": "system", "content": system})
+
+    await generic_pipe.Pipe().pipe(request_body)
+
+    assert create.await_args.kwargs["input"] == [
+        *expected_input,
+        {"role": "user", "content": "Refund ORDER-123"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "chat_variables",
+    [
+        {
+            "use_history": "true",
+            "delay_seconds": "42",
+            "audience": "expert",
+            "note": "",
+            "web_search": "true",
+            "lgos_background": "false",
+        },
+        {
+            "use_history": True,
+            "delay_seconds": 42,
+            "audience": "expert",
+            "note": None,
+            "web_search": True,
+            "lgos_background": False,
+        },
+    ],
+    ids=["declared-default-strings", "edited-form-values"],
+)
+async def test_chat_variables_reach_responses_with_their_declared_types(
+    monkeypatch: pytest.MonkeyPatch, chat_variables: dict[str, object]
+) -> None:
+    create = AsyncMock(return_value=final_response("Done."))
+    install_client(monkeypatch, create=create)
+    fields = [
+        {"key": "use_history", "type": "checkbox"},
+        {"key": "delay_seconds", "type": "number"},
+        {"key": "audience", "type": "select"},
+        {"key": "note", "type": "text"},
+        {"key": "web_search", "type": "checkbox"},
+        {"key": "lgos_background", "type": "checkbox"},
+    ]
+
+    await generic_pipe.Pipe().pipe(
+        {**body(stream=False), "model": "generic.lgos-a/advanced-graph"},
+        __metadata__={
+            "chat_id": "thread-123",
+            "chat_variables": chat_variables,
+            "model": {"info": {"meta": {"chat_variables_schema": {"fields": fields}}}},
+        },
+    )
+
+    request = create.await_args.kwargs
+    assert json.loads(request["metadata"]["lgos_settings"]) == {
+        "use_history": True,
+        "delay_seconds": 42,
+        "audience": "expert",
+    }
+    assert request["tools"] == [{"type": "web_search"}]
+    assert "background" not in request
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
-    ("gateway_type", "base_path", "expected_model", "extra_headers"),
-    [
-        (
-            "bifrost",
-            "/openai/v1",
-            "interruptible-approval",
-            {"x-model-provider": "lgos-a"},
-        ),
-        ("litellm", "/v1", "lgos-a/interruptible-approval", None),
-    ],
+    ("gateway_type", "base_path"),
+    [("bifrost", "/openai/v1"), ("litellm", "/v1")],
 )
 async def test_request_uses_a_native_responses_route(
     monkeypatch: pytest.MonkeyPatch,
     gateway_type: str,
     base_path: str,
-    expected_model: str,
-    extra_headers: dict[str, str] | None,
     stream: bool,
 ) -> None:
     base_urls = []
@@ -659,8 +963,9 @@ async def test_request_uses_a_native_responses_route(
         assert result == ["Approved."]
         request = create.await_args.kwargs
     assert base_urls == [f"https://gateway.example{base_path}"]
-    assert request["model"] == expected_model
-    assert request.get("extra_headers") == extra_headers
+    # Bifrost ignores x-model-provider on Responses; the catalog ID selects it.
+    assert request["model"] == "lgos-a/interruptible-approval"
+    assert "extra_headers" not in request
 
 
 @pytest.mark.parametrize("phase", [None, "final_answer"])

@@ -33,7 +33,9 @@ async def test_bifrost_catalog_preserves_provider_metadata(
         else:
             assert request.url.path == "/openai_passthrough/v1/models"
             assert request.headers["x-model-provider"] in {"team", "other"}
-            data = [graph]
+            # Provider detail bypasses native catalog filtering. It must not
+            # turn a restricted provider into extra selectable chat profiles.
+            data = [graph, {**graph, "id": "not-allowed"}]
         return httpx2.Response(200, json={"object": "list", "data": data})
 
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(handle)) as http:
@@ -57,12 +59,6 @@ def test_bifrost_uses_native_responses_and_files(
     assert gateway.responses_base_url == "https://gateway.example/openai/v1"
     assert gateway.files_base_url == "https://gateway.example/v1"
     assert gateway.files_provider == "lgos-files"
-    assert clients.model_request("lgos-b/namespace/graph-b") == {
-        "model": "namespace/graph-b",
-        "extra_headers": {"x-model-provider": "lgos-b"},
-    }
-    with pytest.raises(ValueError, match="provider/model"):
-        clients.model_request("graph-b")
 
 
 def test_chat_client_identifies_chainlit_for_telemetry() -> None:
@@ -131,8 +127,6 @@ async def test_litellm_model_info_owns_catalog_and_preserves_public_names(
     assert [model.id for model in models] == names
     assert retrieved.id == names[1]
     assert (retrieved.model_extra or {})["lgos"] == metadata
-    for name in names:
-        assert clients.model_request(name) == {"model": name}
 
 
 @pytest.mark.parametrize("status", [403, 200], ids=["forbidden", "invalid-payload"])

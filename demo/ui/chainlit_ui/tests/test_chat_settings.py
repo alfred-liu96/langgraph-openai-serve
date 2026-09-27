@@ -125,6 +125,33 @@ async def test_discovered_settings_are_published(
     assert session.values[chat_settings.MODEL_FEATURES_SESSION_KEY] == []
 
 
+async def test_background_capability_adds_delivery_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chat_settings = importlib.import_module("lgos_chainlit.chat_settings")
+    session = Session({"chat_profile": "background-mock"})
+    factory, _ = chat_settings_spy(monkeypatch, chat_settings)
+    monkeypatch.setattr(
+        chat_settings,
+        "retrieve_model",
+        AsyncMock(return_value=configured_model(None, features=["background"])),
+    )
+    monkeypatch.setattr(chat_settings.cl, "user_session", session)
+
+    await chat_settings.configure_chat_settings()
+
+    assert [(widget.id, widget.initial) for widget in factory.call_args.args[0]] == [
+        (chat_settings.STREAMING_SETTING_ID, True),
+        (chat_settings.BACKGROUND_SETTING_ID, False),
+    ]
+    assert chat_settings.background_enabled() is False
+    session.values["chat_settings"] = {
+        chat_settings.BACKGROUND_SETTING_ID: True,
+    }
+    assert chat_settings.background_enabled() is True
+    assert chat_settings.chat_settings_metadata() == {}
+
+
 async def test_server_tool_profile_uses_fixed_opt_in_tools(
     monkeypatch: pytest.MonkeyPatch,
     runtime_client_settings: ModelClientSettings,
@@ -425,6 +452,7 @@ async def test_selected_settings_reach_the_openai_request(
     monkeypatch.setattr(chat.cl, "Message", Mock(return_value=assistant_message))
     monkeypatch.setattr(chat, "text_only_chat_messages", lambda: messages)
     monkeypatch.setattr(chat, "authenticated_user_identifier", lambda: "demo-user")
+    monkeypatch.setattr(chat, "send_speech_button", AsyncMock())
     monkeypatch.setattr(
         chat.cl,
         "context",
@@ -440,8 +468,7 @@ async def test_selected_settings_reach_the_openai_request(
     await chat.on_message(Mock(content="Hello"))
 
     create.assert_awaited_once_with(
-        model="simple",
-        extra_headers={"x-model-provider": "lgos-a"},
+        model="lgos-a/simple",
         input=messages,
         store=False,
         tools=[],
@@ -489,6 +516,7 @@ async def test_streaming_can_be_disabled_without_forwarding_the_ui_setting(
     monkeypatch.setattr(chat.cl, "Message", Mock(return_value=assistant_message))
     monkeypatch.setattr(chat, "text_only_chat_messages", lambda: messages)
     monkeypatch.setattr(chat, "authenticated_user_identifier", lambda: "demo-user")
+    monkeypatch.setattr(chat, "send_speech_button", AsyncMock())
     monkeypatch.setattr(
         chat.cl,
         "context",
@@ -504,8 +532,7 @@ async def test_streaming_can_be_disabled_without_forwarding_the_ui_setting(
     await chat.on_message(Mock(content="Hello"))
 
     create.assert_awaited_once_with(
-        model="simple",
-        extra_headers={"x-model-provider": "lgos-a"},
+        model="lgos-a/simple",
         input=messages,
         store=False,
         tools=[],

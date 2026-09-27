@@ -8,6 +8,8 @@ from chainlit.data import get_data_layer
 from chainlit.data.chainlit_data_layer import ChainlitDataLayer
 from chainlit.data.storage_clients.s3 import S3StorageClient
 from chainlit.utils import mount_chainlit
+from chainlit_utils.public_files import serve_public_files
+from chainlit_utils.sessions import keep_restored_sessions
 from fastapi import FastAPI
 
 from lgos_chainlit.auth import configure_auth, token_store
@@ -20,6 +22,9 @@ os.environ.setdefault(
     Path(__file__).with_name("aws_config").as_posix(),
 )
 get_chainlit_settings()
+keep_restored_sessions()
+serve_public_files()
+config.features.audio.enabled = settings.AUDIO_STT_MODEL is not None
 
 if not settings.ENABLE_OAUTH_TOKEN_FORWARDING:
     assert settings.OPENAI_GATEWAY_API_KEY is not None
@@ -35,7 +40,7 @@ async def _close_chainlit_data_layer() -> None:
     if not isinstance(data_layer, ChainlitDataLayer):
         return
     if isinstance(data_layer.storage_client, S3StorageClient):
-        # Chainlit 2.12.0 incorrectly awaits boto3's synchronous close method.
+        # Chainlit incorrectly awaits boto3's synchronous close method.
         data_layer.storage_client.client.close()
         data_layer.storage_client = None
     await data_layer.close()

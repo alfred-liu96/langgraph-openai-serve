@@ -14,8 +14,8 @@ each API process.
 !!! warning "Managed gateway normalization boundaries"
 
     The bundled Bifrost native Responses route preserves standard fields, file
-    input, commentary, `phase`, and `store: false`; normalized model detail and
-    error metadata remain lossy. Its raw pass-through route
+    input, commentary, `phase`, `store: false`, and upstream error `type` and
+    `param`; normalized model detail remains lossy. Its raw pass-through route
     preserves successful-request contracts, while virtual-key governance
     rejects an unknown model before its upstream error can pass through. The
     bundled `homeserver-litellm` image preserves native streaming and
@@ -48,10 +48,13 @@ flowchart LR
   end
 
   files["Files service<br/>OpenAI Files API + S3 repository"]
+  speech["aigateway<br/>OpenAI speech models"]
   dbhub["DBHub<br/>read-only MCP server"]
   database[("lgos-db PostgreSQL<br/>dedicated mcp_demo schema")]
 
   model["Upstream OpenAI-compatible model"]
+  hatchet["Hatchet workflow service"]
+  worker["Optional background worker"]
 
   user <--> chainlit
   user <--> openwebui
@@ -67,8 +70,15 @@ flowchart LR
   litellm <-->|"managed inference"| api_a
   litellm <-->|"managed inference"| api_b
   litellm <-->|"provider: litellm_proxy"| files
+  bifrost <-->|"provider: aigateway"| speech
+  litellm <-->|"aigateway/* models"| speech
   bifrost <-->|"allowlisted MCP tools"| dbhub
   litellm <-->|"allowlisted MCP tools"| dbhub
+  api_a <-->|"trigger, read, cancel run"| hatchet
+  api_b <-->|"trigger, read, cancel run"| hatchet
+  hatchet <-->|"job + Response"| worker
+  worker <-->|"checkpoints, Store, locks"| database
+  worker -->|"when a graph calls a model"| model
   dbhub -->|"lgos_mcp read-only role"| database
   api_a <-->|"when a graph calls a model"| model
   api_b <-->|"when a graph calls a model"| model
@@ -78,7 +88,8 @@ With LiteLLM selected, the UIs read native `/model/info`, use `model_info.lgos`
 for capabilities and settings, and send `model_name` unchanged through managed
 Responses routing. With Bifrost selected, they discover provider-qualified IDs through
 its aggregate catalog, use raw pass-through only for model detail, and send
-Responses through native routing with `x-model-provider`. Both choices upload
+the catalog ID unchanged through native Responses routing, where its prefix
+selects the provider. Both choices upload
 attachments through normal gateway Files routing before sending the returned
 `file_id` to a graph. This preserves descriptions and runtime capabilities
 without allowing UI inference to bypass the gateway's normal data plane.
@@ -86,24 +97,37 @@ For `mcp-postgres`, the clients also discover and execute the gateway's native
 MCP tools; DBHub and the database credential remain behind that gateway. See
 [PostgreSQL Through Native MCP](graphs/mcp-postgres.md).
 
+Speech stays in the clients. Chainlit and Open WebUI transcribe microphone
+recordings through the gateway's `/v1/audio/transcriptions` route, send the
+transcript as a normal text turn, and read answers aloud through
+`/v1/audio/speech`. The bundled gateways forward those calls to aigateway's
+OpenAI models; LGOS never receives audio. See the
+[Chainlit](chainlit.md#voice) and [Open WebUI](open-webui.md#voice) voice guides.
+
 The [LGOS-owned sync command](litellm-sync.md) registers concrete models and full
 metadata in LiteLLM's database. Run it after graph changes; the gateway needs no
 LGOS-specific code. LiteLLM exposes no demo pass-through routes. Protocol tests
 compare its managed stream with the direct LGOS endpoint; UI clients never
 make that direct connection.
 
-At startup, Compose waits for PostgreSQL and runs the one-shot API and Chainlit
-schema migrations. The idempotent MCP setup then creates the reporting views,
-role, and grants before DBHub starts. Both healthy graph APIs and the Files
-service start before the selected gateway and UI clients. The diagram shows
-request traffic rather than those readiness dependencies. Compose runs one
-Files process for the demo; production deployments may run multiple stateless
-replicas over the same repository.
+Background-capable models use the selected gateway's normal Responses
+lifecycle. Chainlit and Open WebUI discover the capability, create a non-streaming
+background Response, and poll or cancel through the OpenAI SDK. Hatchet runs
+each job and stores its status and Response, which every API replica reads.
+
+At startup, Compose waits for PostgreSQL and runs the one-shot API schema setup
+and Chainlit schema migrations. The idempotent MCP setup then creates the
+reporting views, role, and grants before DBHub starts. Both healthy graph APIs
+and the Files service start before the selected gateway and UI clients. The
+diagram shows request traffic rather than those readiness dependencies.
+Compose runs one Files process for the demo; production deployments may run
+multiple stateless replicas over the same repository.
 
 ## State Ownership
 
-The UIs own their conversations. The API stores only paused interrupt execution
-and explicit graph data; it does not copy either UI transcript into LGOS.
+The UIs own their conversations. The API stores paused interrupt execution
+and explicit graph data, and Hatchet stores background runs; neither copies
+either UI transcript into LGOS.
 
 ```mermaid
 flowchart LR
@@ -148,8 +172,11 @@ keeps its state and native raw-upload copy in its bind-mounted data directory;
 the central Files service owns the separate inference copy. Detailed ownership
 and recovery behavior live in
 [Persistent Plot Agent](graphs/persistent-plot-agent.md) and [Interruptible
-Human Review](graphs/interruptible-approval.md). When
-`LGOS_ENABLE_LANGFUSE=true`, each API adds the Langfuse callback to graph runs
+Human Review](graphs/interruptible-approval.md). Background execution is
+described in [Background Mock](graphs/background-mock.md);
+`advanced-graph` runs in the same worker when a client requests background
+mode. When
+`LGOS_ENABLE_LANGFUSE=True`, each API adds the Langfuse callback to graph runs
 and exports observations directly to the configured Langfuse service. Langfuse
 is not a Compose service or a proxy in the request path.
 
