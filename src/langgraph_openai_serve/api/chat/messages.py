@@ -19,10 +19,7 @@ from langgraph_openai_serve.api.chat.schemas import (
     Role,
 )
 from langgraph_openai_serve.api.tools import decode_function_call
-
-
-class InvalidChatMessageError(ValueError):
-    """Raised when a chat message is missing a role-specific required field."""
+from langgraph_openai_serve.core.errors import InvalidRequestError
 
 
 def _langchain_content(
@@ -76,7 +73,7 @@ def convert_to_lc_messages(
             case Role.TOOL:
                 if m.tool_call_id is None:
                     msg = "Tool messages require the 'tool_call_id' field."
-                    raise InvalidChatMessageError(msg)
+                    raise InvalidRequestError(msg, param="messages")
                 lc_messages.append(
                     ToolMessage(
                         content=_langchain_content(m.content),

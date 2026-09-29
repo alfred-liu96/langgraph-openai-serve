@@ -26,10 +26,7 @@ from langgraph_openai_serve.api.responses.schemas import (
     ResponseWebSearchCallInput,
 )
 from langgraph_openai_serve.api.tools import decode_function_call
-
-
-class InvalidResponsesInputError(ValueError):
-    """Raised when Responses input items cannot be replayed unambiguously."""
+from langgraph_openai_serve.core.errors import InvalidRequestError
 
 
 def convert_responses_input(
@@ -72,13 +69,13 @@ def _validate_replay_ids(
         if item_id is not None:
             if item_id in seen_item_ids:
                 msg = f"Responses input contains duplicate item id '{item_id}'."
-                raise InvalidResponsesInputError(msg)
+                raise InvalidRequestError(msg, param="input")
             seen_item_ids.add(item_id)
 
         if isinstance(item, (ResponseFunctionCallInput, ResponseCustomToolCallInput)):
             if item.call_id in seen_call_ids:
                 msg = f"Responses input contains duplicate call_id '{item.call_id}'."
-                raise InvalidResponsesInputError(msg)
+                raise InvalidRequestError(msg, param="input")
             seen_call_ids[item.call_id] = item.type
         elif isinstance(
             item, (ResponseFunctionCallOutputInput, ResponseCustomToolCallOutputInput)
@@ -88,13 +85,13 @@ def _validate_replay_ids(
                     "Responses input contains duplicate tool output call_id "
                     f"'{item.call_id}'."
                 )
-                raise InvalidResponsesInputError(msg)
+                raise InvalidRequestError(msg, param="input")
             if item.type != f"{seen_call_ids.get(item.call_id)}_output":
                 msg = (
                     "Responses tool output call_id and type must match an earlier "
                     f"tool call; got '{item.call_id}'."
                 )
-                raise InvalidResponsesInputError(msg)
+                raise InvalidRequestError(msg, param="input")
             seen_output_call_ids.add(item.call_id)
 
     unanswered = seen_call_ids.keys() - seen_output_call_ids
@@ -103,7 +100,7 @@ def _validate_replay_ids(
             "Responses tool calls require matching tool output items; "
             f"missing outputs for {', '.join(sorted(unanswered))}."
         )
-        raise InvalidResponsesInputError(msg)
+        raise InvalidRequestError(msg, param="input")
 
 
 def _message_from_item(item: ResponseInputItem) -> BaseMessage:
@@ -246,4 +243,4 @@ def _output_content(
     )
 
 
-__all__ = ["InvalidResponsesInputError", "convert_responses_input"]
+__all__ = ["convert_responses_input"]
