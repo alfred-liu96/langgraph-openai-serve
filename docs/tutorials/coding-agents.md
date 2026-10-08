@@ -10,6 +10,10 @@ The demo
 is the smallest tool-enabled graph. It forwards client-provided tools to the
 upstream model and does not execute them.
 
+To serve a coding agent behind LGOS, see the
+[coding-agent showcase](../demo/graphs/coding-agent.md). That service runs Codex
+on the server and accepts requests from the demo UIs.
+
 ## Endpoint And Model
 
 Connect directly to LGOS and use the exact model ID from `GET /v1/models`:
@@ -22,9 +26,7 @@ An optional gateway may use a provider-qualified routing ID, but it must pass
 the native contract tests in the [proxy guide](../how-to-guides/openai-proxies.md).
 The pinned Bifrost demo's native Responses route preserves the tested data-plane
 contract, including `phase`, `store: false`, and upstream error metadata; its
-normalized model detail remains lossy. The raw OpenAI pass-through route preserves
-successful-request contracts, while virtual-key governance rejects the
-unknown-model error case before pass-through.
+normalized model detail remains lossy.
 
 ## Client Compatibility
 

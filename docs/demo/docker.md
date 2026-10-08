@@ -2,11 +2,12 @@
 
 ## Self-Contained Demo Layout
 
-The demo uses four independent uv projects rather than a uv workspace:
+The demo uses five independent uv projects rather than a uv workspace:
 
 | Project | Lockfile | Deployment |
 | --- | --- | --- |
 | `demo/api` | `demo/api/uv.lock` | `ghcr.io/ilkersigirci/lgos-demo-api` |
+| `demo/api-coding-agent` | `demo/api-coding-agent/uv.lock` | Local image build |
 | `demo/files_api` | `demo/files_api/uv.lock` | `ghcr.io/ilkersigirci/lgos-files-api` |
 | `demo/ui/chainlit_ui` | `demo/ui/chainlit_ui/uv.lock` | `ghcr.io/ilkersigirci/lgos-chainlit` |
 | `demo/ui/openwebui` | `demo/ui/openwebui/uv.lock` | Host-run sync tool; unchanged pinned official Open WebUI image |
@@ -16,8 +17,8 @@ contexts. The Compose entrypoint is `docker/compose/demo.yml`; service
 definitions live in `docker/apps/`, while `docker/compose/development.yml` and
 `docker/compose/otel.yml` provide development and OpenTelemetry overlays.
 Shared runtime assets remain under `demo/docker/`. The development overlay
-additionally supplies the parent LGOS checkout as a named context for the API's
-editable install. Open WebUI runs its pinned official image unchanged. Its
+additionally supplies the parent LGOS checkout as a named context for the demo API and coding-agent API
+editable installs. Open WebUI runs its pinned official image unchanged. Its
 locked OpenAI v3 and HTTPX2 synchronization project runs on the host, while
 Compose mounts only the Function sources and small raw-upload policy into the
 upstream image. The two gateway fragments use pinned public images: upstream
@@ -33,10 +34,7 @@ In a standalone copy of `demo/`, use `just <recipe>` in place of
 
 !!! note "Docker Compose 5.3.0 or newer"
 
-    The demo is validated with Compose 5.3.0. The graph APIs and Chainlit apply
-    pending database migrations before reporting healthy. PostgreSQL locks
-    serialize concurrent migrations; a migration failure stops the affected
-    service. A separate MCP provisioning job completes before DBHub starts.
+    The demo is validated with Compose 5.3.0.
 
 Prepare the demo environment:
 
@@ -58,30 +56,30 @@ settings](reference.md#opentelemetry-settings).
 
 === "Published images"
 
-    `demo/docker/compose/demo.yml` contains no local builds:
+    `demo/docker/compose/demo.yml` uses published images for the demo API,
+    Files API, and UIs. The coding-agent service builds locally:
 
     ```bash
     just demo/compose
     ```
 
-    The command waits for the gateway and its dependencies, syncs LiteLLM when
-    selected, then starts and syncs Open WebUI. Chainlit starts earlier as a
-    DBHub dependency, applying its migrations before MCP reporting views are
-    created. Services remain running
-    in the background. Compose owns [dependency order and
+    The command waits for the gateway and its dependencies, including Chainlit
+    and DBHub, syncs metadata into the selected gateway, then starts and syncs
+    Open WebUI. Bifrost also runs a catalog preparation job before starting.
+    Services remain running in the background. Compose owns [dependency order and
     readiness](https://docs.docker.com/compose/how-tos/startup-order/); `just` only
     sequences the repeatable sync jobs.
 
     Set `DEMO_IMAGE_TAG` in `demo/.env` to select one
-    release tag for all project-owned demo images. To add the published OTEL
+    release tag for the published project-owned demo images. To add the published OTEL
     overlay, use `just demo/compose --otel`.
 
 === "Build demo projects"
 
     Apply the explicit development model from the LGOS repository checkout.
-    The API, Files API, and Chainlit services build locally from their
+    The demo API, coding-agent API, Files API, and Chainlit services build locally from their
     Dockerfiles and lockfiles; Open WebUI remains the pinned upstream image.
-    Only the API image installs the parent LGOS
+    Both graph API images install the parent LGOS
     checkout as an editable package:
 
     ```bash
@@ -96,6 +94,24 @@ settings](reference.md#opentelemetry-settings).
     after source edits. Dependency metadata and lockfile changes require an
     image rebuild.
 
+    ??? tip "Develop with the local Chainlit utilities"
+
+        To try a sibling `../chainlit-utils` checkout before publishing, add
+        the optional override:
+
+        ```bash
+        just demo/compose --dev --chainlit-utils
+        ```
+
+        This selects an editable build target and mounts the utility source
+        read-only in the existing `lgos-chainlit` service. Only this mode
+        requires the sibling checkout. Regular development uses the utility
+        release recorded in the lockfile.
+
+        After utility source edits, run `docker restart lgos-chainlit`.
+        `just demo/up lgos-chainlit --dev` recreates the service without the
+        override. Rerun the command above after dependency changes to rebuild.
+
 === "Test this LGOS checkout without containers"
 
     For immediate local feedback without containers, use uv's temporary
@@ -105,8 +121,8 @@ settings](reference.md#opentelemetry-settings).
     just demo/test --editable
     ```
 
-    This tests all four projects and does not rewrite `api/pyproject.toml` or
-    `api/uv.lock`. Chainlit and Open WebUI remain standalone clients and exercise
+    This tests all five projects without changing their dependency declarations
+    or lockfiles. Chainlit and Open WebUI remain standalone clients and exercise
     whichever API their OpenAI base URL targets.
 
 ## Demo Services
@@ -123,18 +139,14 @@ settings](reference.md#opentelemetry-settings).
     just demo/up lgos-postgres-mcp --wait
     ```
 
-    API A and Chainlit initialize their persistence schemas during startup.
-    After they report healthy, `lgos-mcp-db-setup` runs `psql` to create or update
-    the dedicated `lgos_mcp` login and four curated views over live Chainlit
-    users/conversations and pending LGOS interrupts in one transaction. This
-    repeatable provisioning job owns the demo's reporting schema. DBHub depends
-    on its [successful completion](https://docs.docker.com/compose/how-tos/startup-order/);
-    a setup failure prevents DBHub from starting. The pinned upstream DBHub image
-    runs with its original entrypoint and only the restricted reporting credentials,
-    exposing six fixed reports inside the Compose network.
-    It publishes no host port. Starting either bundled gateway starts these
-    dependencies automatically. Replace `LGOS_MCP_DB_PASSWORD` and
-    `LGOS_MCP_AUTH_TOKEN` before startup. See
+    Once API A and Chainlit are healthy, and so have created their tables, the
+    one-shot `lgos-mcp-db-setup` job creates or updates the dedicated `lgos_mcp`
+    login and four curated views over live Chainlit users/conversations and
+    pending LGOS interrupts. The role can read only those views. The pinned
+    DBHub service then exposes six fixed reports only inside the Compose
+    network; it publishes no host port. Starting either bundled gateway starts
+    these dependencies, including Chainlit, automatically. Replace
+    `LGOS_MCP_DB_PASSWORD` and `LGOS_MCP_AUTH_TOKEN` before startup. See
     [PostgreSQL Through Native MCP](graphs/mcp-postgres.md) for the complete
     client and security flow.
 
@@ -146,14 +158,7 @@ settings](reference.md#opentelemetry-settings).
     ```
 
     Run each attached service in a separate terminal. Compose starts the shared
-    PostgreSQL dependency automatically. Each API waits for PostgreSQL health,
-    then runs LangGraph's checkpoint and Store `setup()` methods during its
-    lifespan before opening its runtime pool. A session advisory lock serializes
-    migrations across API replicas and the background worker, including the
-    upstream migrations that require autocommit. Lock acquisition uses
-    nonblocking checks with a 60-second deadline so waiting replicas do not
-    block concurrent index creation. Already-applied versions are skipped.
-    These startup hooks also run when launching the processes locally.
+    PostgreSQL dependency automatically.
 
     - `lgos-a`: `http://localhost:3004/v1`
     - `lgos-b`: `http://localhost:3005/v1`
@@ -171,7 +176,7 @@ settings](reference.md#opentelemetry-settings).
     # Choose litellm or bifrost.
     OPENAI_GATEWAY_TYPE=litellm
     COMPOSE_PROFILES=${OPENAI_GATEWAY_TYPE},background
-    DEMO_API_BACKGROUND_ENABLED=True
+    LGOS_BACKGROUND=hatchet
     HATCHET_CLIENT_TOKEN=...
     ```
 
@@ -184,7 +189,8 @@ settings](reference.md#opentelemetry-settings).
 
     The `lgos-background-worker` process uses explicit Hatchet slots and the
     same PostgreSQL checkpointer, coordinator, and graph code as the APIs. It
-    exposes no HTTP port. The API triggers the Hatchet task and reads its
+    publishes no port; Compose checks Hatchet's worker health endpoint on port
+    8001 inside the container. The API triggers the Hatchet task and reads its
     status and Response from Hatchet. See [Background Mock](graphs/background-mock.md).
 
 === "Files API"
@@ -201,12 +207,14 @@ settings](reference.md#opentelemetry-settings).
 === "Bifrost"
 
     ```bash
-    just demo/up lgos-bifrost
+    just demo/compose
     ```
 
     The UIs use native `/openai/v1/responses`, normal `/v1` Files routing, the
-    aggregate `/mcp` endpoint, and raw pass-through only for provider-specific
-    catalog detail. The named PostgreSQL Virtual MCP remains available at
+    aggregate `/mcp` endpoint, and native `/v1/models` metadata. Compose prepares
+    zero-priced graph rows and synchronizes descriptions, features, and client
+    settings automatically. Use `--dev` to build this checkout. The named
+    PostgreSQL Virtual MCP remains available at
     `http://localhost:3000/mcp/lgos-postgres`. See [Bifrost Gateway](bifrost.md)
     for endpoints, routing, and the shared SDK verification command.
 
@@ -247,9 +255,7 @@ settings](reference.md#opentelemetry-settings).
 
     Enable LiteLLM's native database model storage. For Files, adapt the
     `files_settings` in [`docker/configs/litellm/config.yaml`](https://github.com/ilkersigirci/langgraph-openai-serve/blob/main/demo/docker/configs/litellm/config.yaml)
-    to the shared Files service. No LGOS catalog pass-through
-    is required. Retain the bundled image's
-    `LITELLM_ENABLE_RESPONSES_STREAMING_FIX=true` opt-in when using that image.
+    to the shared Files service.
 
     On the same Docker host, attach the existing LiteLLM service to the demo's
     network through its own Compose deployment, alongside its current networks:
@@ -269,11 +275,13 @@ settings](reference.md#opentelemetry-settings).
 
     Create the network by starting the demo backends first, for example with
     `just demo/up lgos-demo-api-a`,
-    `just demo/up lgos-demo-api-b`, and
+    `just demo/up lgos-demo-api-b`,
+    `just demo/up lgos-api-coding-agent`, and
     `just demo/up lgos-files-api` in separate terminals, then
     `just demo/up lgos-postgres-mcp --wait`.
     The existing gateway can then resolve `lgos-demo-api-a`,
-    `lgos-demo-api-b`, `lgos-files-api`, and `lgos-postgres-mcp` using the
+    `lgos-demo-api-b`, `lgos-api-coding-agent`, `lgos-files-api`, and
+    `lgos-postgres-mcp` using the
     bundled sync, Files, and MCP configuration examples. For another host,
     replace those upstream URLs with addresses reachable from that gateway.
 
@@ -294,7 +302,7 @@ settings](reference.md#opentelemetry-settings).
     ```
 
     LiteLLM is one of the two first-class UI entry points. After startup,
-    [sync both demo catalogs](litellm-sync.md#usage). The UIs use:
+    [sync all graph catalogs](litellm-sync.md#usage). The UIs use:
 
     - model metadata: `http://localhost:3000/model/info`
     - managed Files: `http://localhost:3000/v1`
@@ -344,10 +352,8 @@ settings](reference.md#opentelemetry-settings).
     [`homeserver-litellm` image](https://github.com/ilkersigirci/homeserver-docker/pkgs/container/homeserver-litellm)
     preserves native Responses streaming and polling-only background
     lifecycles. Compose
-    reads its tag and digest from `DEMO_LITELLM_IMAGE` in `demo/.env` and enables
-    `LITELLM_ENABLE_RESPONSES_STREAMING_FIX=true` so it honors the deployment
-    capability. Normal demo commands use this image without a local build or
-    an image override.
+    reads its tag and digest from `DEMO_LITELLM_IMAGE` in `demo/.env`. Normal
+    demo commands use this image without a local build or an image override.
 
     To use another compatible image, set `DEMO_LITELLM_IMAGE` in `demo/.env`
     or supply it on the command line:
@@ -372,8 +378,7 @@ settings](reference.md#opentelemetry-settings).
 
     With the service healthy, run the focused OpenAI SDK check from the
     repository root. It tests managed routing, the catalog-to-inference
-    flow, and native streaming fidelity against the direct LGOS test endpoints.
-    LiteLLM exposes no demo pass-through routes:
+    flow, and native streaming fidelity against the direct LGOS test endpoints:
 
     ```bash
     just demo/test-litellm --editable
@@ -381,7 +386,8 @@ settings](reference.md#opentelemetry-settings).
 
 === "Chainlit"
 
-    With the gateway and its backends running:
+    The bundled gateways already start Chainlit. With an external gateway and
+    its backends running:
 
     ```bash
     just demo/up lgos-chainlit
@@ -411,11 +417,15 @@ settings](reference.md#opentelemetry-settings).
     under [Open WebUI file input](open-webui.md#file-input).
 
 PostgreSQL is published on `localhost:3001`. LangGraph persistence, Bifrost
-state, and Open WebUI state—including its native raw file copies—use host bind
-mounts under `demo/docker/volumes/`; the Compose model declares no named
-volumes. Every service runs as `PUID:PGID` with a read-only root filesystem,
-dropped capabilities, and explicit resource limits. Narrow tmpfs mounts hold
-required ephemeral writes.
+state, Open WebUI state—including its native raw file copies—and the
+coding-agent workspace and Codex threads use host bind mounts under
+`demo/docker/volumes/`; the Compose model declares no named volumes. Every
+service runs as `PUID:PGID` with a read-only root filesystem, dropped
+capabilities, and explicit resource limits. Narrow tmpfs mounts hold
+required ephemeral writes. The graph APIs, background worker, and Chainlit
+apply pending schema migrations when they start and stop if one fails. Each
+takes a PostgreSQL advisory lock first, so processes that start together
+migrate one at a time.
 
 Chainlit stores thread and element metadata in PostgreSQL, while its native S3
 client uploads generated file elements to the configured `BUCKET_NAME`.

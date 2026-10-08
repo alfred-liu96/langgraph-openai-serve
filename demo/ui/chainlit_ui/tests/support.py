@@ -45,7 +45,7 @@ class FakeGateway:
 
 def response(
     *output: ResponseOutputItem,
-    id: str = "resp_test",
+    id: str = "resp_test",  # ruff: ignore[builtin-argument-shadowing] - The test double preserves the SDK keyword parameter.
     status: str = "completed",
     **fields: Any,
 ) -> Response:
@@ -68,7 +68,7 @@ def response(
 def message(
     text: str,
     *,
-    id: str = "msg_answer",
+    id: str = "msg_answer",  # ruff: ignore[builtin-argument-shadowing] - The test double preserves the SDK keyword parameter.
     phase: str | None = "final_answer",
     annotations: Sequence[Annotation] = (),
 ) -> ResponseOutputMessage:
@@ -104,7 +104,8 @@ def reply(response: Response) -> httpx2.Response:
 
 
 def streamed(response: Response, *, deltas: bool = True) -> httpx2.Response:
-    """Stream a Response as text deltas followed by its terminal event.
+    """
+    Stream a Response as text deltas followed by its terminal event.
 
     Without deltas, the stream resembles a proxy that forwards only lifecycle
     events.
@@ -166,6 +167,38 @@ def streamed(response: Response, *, deltas: bool = True) -> httpx2.Response:
             ]
     events.append({"type": f"response.{response.status}", "response": payload})
     return sse(*events)
+
+
+def unfinished_answer(*deltas: str) -> list[dict[str, Any]]:
+    """Start one answer and stream these text deltas without finishing it."""
+    payload = response(message("".join(deltas))).model_dump(mode="json")
+    item = payload["output"][0]
+    part = {"item_id": item["id"], "output_index": 0, "content_index": 0}
+    return [
+        {
+            "type": "response.created",
+            "response": {**payload, "status": "in_progress", "output": []},
+        },
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {**item, "content": []},
+        },
+        {
+            "type": "response.content_part.added",
+            **part,
+            "part": {"type": "output_text", "text": "", "annotations": []},
+        },
+        *(
+            {
+                "type": "response.output_text.delta",
+                **part,
+                "delta": delta,
+                "logprobs": [],
+            }
+            for delta in deltas
+        ),
+    ]
 
 
 def sse(*events: dict[str, Any]) -> httpx2.Response:

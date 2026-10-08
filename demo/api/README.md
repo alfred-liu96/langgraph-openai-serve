@@ -1,22 +1,22 @@
 # LGOS demo API
 
-Standalone FastAPI application exposing example LangGraph graphs through
-`langgraph-openai-serve`.
+Example LangGraph graphs served by `lgos serve` from `langgraph-openai-serve`.
+`src/lgos_demo_api/registry.py` opens the catalog that the API and the Hatchet
+worker both run.
 
 ```bash
 cp .env.example .env
-uv run --locked --env-file .env lgos-demo-api
+uv run --locked --env-file .env lgos serve
 ```
 
-The API writes JSON logs to stdout. LGOS log records include correlation fields
+The server writes JSON logs to stdout. LGOS log records include correlation fields
 such as `request_id`, `model`, `stream`, and `operation_id` when available. The
 optional `demo/docker/compose/otel.yml` deployment overlay also exports the same
 standard-library records as native OpenTelemetry logs over OTLP.
 
-Configuration uses the `DEMO_API_` prefix. For example,
-`DEMO_API_POSTGRES_URI` selects the shared database for the LangGraph
-checkpointer, Store, and interrupt coordination. These are demo deployment
-choices, not package requirements.
+Graph configuration uses the `DEMO_API_` prefix. The server reads the `LGOS_*`
+settings; for example, `LGOS_POSTGRES_URI` selects the shared database for the
+LangGraph checkpointer, Store, and interrupt coordination.
 Set the package-owned `LGOS_ENABLE_LANGFUSE=True` and provide the `LANGFUSE_*`
 credentials to enable LGOS's lazy tracing integration for every demo graph.
 
@@ -35,8 +35,7 @@ calls; `graph_runner.py` compares the Responses endpoint with direct graph
 execution.
 
 The API and background worker apply pending LangGraph checkpoint and Store
-migrations during startup. PostgreSQL serializes concurrent migration attempts;
-a migration failure prevents the process from serving work.
+migrations when they start.
 
 ## LiteLLM Model Sync
 
@@ -50,3 +49,13 @@ for usage. The full-stack
 deployment systems should run it after their own API health check.
 Provide `LITELLM_MASTER_KEY` only to this operator command, not to UI clients.
 The command and its tests belong to this project; LiteLLM does not load them.
+
+## Bifrost Model Sync
+
+`python -m lgos_demo_api.utils.sync_bifrost` provides `prepare` and `sync`
+commands. Compose runs preparation before Bifrost starts, then publishes
+descriptions and complete LGOS metadata into its native catalog after it is
+healthy. Both jobs use this API image. No dashboard setup is needed.
+Run `just demo/sync-bifrost [--dev]` after graph metadata changes; see
+[Bifrost catalog sync](../../docs/demo/bifrost.md#declarative-model-metadata)
+for pricing and restart behavior.

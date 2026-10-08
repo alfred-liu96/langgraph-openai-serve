@@ -27,7 +27,7 @@ the replayed answer text.
     Set `OPENAI_GATEWAY_TYPE=litellm|bifrost` once for both demo UIs. LiteLLM
     uses managed Responses; Bifrost uses native Responses. Files also use the
     selected gateway's normal route. Metadata comes from LiteLLM's native
-    `/model/info` or Bifrost's catalog-detail pass-through. Chainlit
+    `/model/info` or Bifrost's native `/v1/models` attributes. Chainlit
     never connects directly to the LGOS or Files containers and remains
     Responses-only.
 
@@ -54,13 +54,11 @@ value before starting the UI; neither service reads the other's S3 settings.
     just demo/compose
     ```
 
-    Chainlit starts before the gateway to initialize the conversation tables
-    used by MCP reports. With LiteLLM selected, the command syncs model metadata
-    once the gateway is ready. Open `http://localhost:3002` after it completes.
+    With LiteLLM selected, this syncs model metadata after Chainlit starts, so
+    open `http://localhost:3002` once the command completes.
 
-    If the gateway and backends are already running,
-    `just demo/up lgos-chainlit`
-    starts only Chainlit and PostgreSQL.
+    With an external gateway, `just demo/up lgos-chainlit` starts only
+    Chainlit and PostgreSQL.
 
 === "Local processes"
 
@@ -78,21 +76,17 @@ value before starting the UI; neither service reads the other's S3 settings.
         just demo/up lgos-bifrost
         ```
 
-    Both gateways use port 3000 and start a Chainlit container on port 3002
-    for the MCP reporting schema. Run the local UI on a separate port:
+    Both gateways use host port 3000 and also start the Chainlit container on
+    port 3002, which the MCP reports depend on. Run the local UI on another port:
 
     ```bash
     just demo/chainlit --port 5000
     ```
 
-    Open `http://localhost:5000`. With LiteLLM, sync model metadata as described
-    below before using the local UI.
+    Open `http://localhost:5000`.
 
-Chainlit's application lifespan applies pending schema migrations on every
-startup before accepting requests. The `chainlit-utils` migration ledger skips
-applied versions, and its PostgreSQL lock serializes concurrent workers.
-Migration failures stop startup. See [Docker Compose](docker.md#demo-services)
-for container endpoints.
+Both modes apply pending Chainlit schema migrations when the UI starts. See
+[Docker Compose](docker.md#demo-services) for container endpoints.
 
 When starting components independently with LiteLLM, [sync model
 metadata](litellm-sync.md) before using the UI. The full-stack Compose targets
@@ -101,9 +95,10 @@ Profile discovery and settings read `GET /model/info` with the current gateway
 credential. Entries with `model_info.lgos` become profiles; `model_name` is
 sent unchanged to managed `/v1/responses`. There are no provider allowlists,
 implicit prefixes, or per-provider catalog URLs.
-With Bifrost selected, aggregate discovery finds each
-provider, catalog detail uses `/openai_passthrough/v1` with
-`x-model-provider`, and inference sends the provider-qualified ID unchanged to
+With Bifrost selected, native `/v1/models` supplies provider-qualified IDs and
+the full extension as a JSON string in `additional_attributes.lgos`.
+[Catalog sync](bifrost.md#declarative-model-metadata) publishes that metadata
+automatically during startup. Inference sends the catalog ID unchanged to
 native `/openai/v1/responses`. The demo API owns the descriptions and capabilities.
 Chainlit keeps the Responses model usable for plain text but marks it as
 **Limited functionality** when an endpoint omits or strips them.
@@ -111,8 +106,8 @@ Chainlit keeps the Responses model usable for plain text but marks it as
 LiteLLM's managed `/v1/models` response contains only the standard model
 fields, so it is not the UI catalog. The full `model_info.lgos` extension
 supplies descriptions, features, and client-settings schemas in one response.
-Selecting a profile rereads this endpoint so settings use current metadata
-and model permissions. Errors do not trigger a fallback to LGOS.
+Selecting a profile rereads the selected gateway's native catalog so settings
+use current metadata and model permissions. Errors do not trigger a fallback to LGOS.
 
 The gateway selector owns routing; users explicitly configure its type and root
 URL. Browser login and gateway authorization are separate settings: mock and
@@ -527,15 +522,29 @@ The bundled Chainlit client uses OpenAI Responses. In streaming mode, the SDK
 stream manager owns event accumulation and supplies
 the terminal `Response`; the adapter streams
 answer text into the assistant message. Messages without the optional `phase`
-field are also treated as answers. It maps completed
-`phase="commentary"` items to a native
-[`TaskList`](https://docs.chainlit.io/api-reference/elements/tasklist), completing
-each prior task when the next status arrives and completing the list when the
-full response succeeds. Clicking **Stop** marks the active task as failed and
-closes the Responses stream; incomplete assistant text remains visible but is
-excluded from later model context. Both streaming and non-streaming requests
-require a completed Response before displaying files or accepting a successful
-turn. Failed interrupt resumes leave the saved continuation intact.
+field are also treated as answers. It maps completed `phase="commentary"`
+items to the display selected by `DEMO_CHAINLIT_STATUS_DISPLAY`:
+
+| Value | Display |
+| --- | --- |
+| `steps` | One native [Chainlit step](https://docs.chainlit.io/api-reference/step-class) per turn. Its label updates with the latest status; click it to expand the history. This is the default. |
+| `tasklist` | A native [TaskList](https://docs.chainlit.io/api-reference/elements/tasklist) containing each status. |
+
+The step stays collapsed by default and keeps its history in the expanded
+content. The task list completes the previous task when the next status arrives.
+Both displays finish when the turn succeeds or pauses for human review. Clicking
+**Stop**, a failed request, or an incomplete response marks the active status
+as failed. Statuses stay out of the assistant answer and later model context.
+Background response polling uses the same display setting. Restart Chainlit
+after changing it. The bundled `[UI] cot = "tool_call"` configuration makes
+steps visible; custom configurations must use `"tool_call"` or `"full"`.
+
+Clicking **Stop** also closes the Responses stream. The answer text shown so far
+stays visible and in later model context; Chainlit's "Task manually stopped."
+notice does not. Both
+streaming and non-streaming requests require a completed Response before
+displaying files or accepting a successful turn. Failed interrupt resumes leave
+the saved continuation intact.
 
 Native refusal text is displayed as the assistant's explanation. Incomplete
 responses report their native reason, retain any already streamed text for the
@@ -577,6 +586,7 @@ Chainlit-specific settings:
 
 | Setting | Notes |
 | --- | --- |
+| `DEMO_CHAINLIT_STATUS_DISPLAY` | Status presentation: `steps` or `tasklist`; also applies to background polling. |
 | `DEMO_CHAINLIT_LOGIN_TYPE` | Browser login: `mock` or `oauth`. |
 | `DEMO_CHAINLIT_ENABLE_OAUTH_TOKEN_FORWARDING` | `false` (default) uses the static key. `true` requires OAuth login and forwards each user's access token. |
 | `DEMO_CHAINLIT_OAUTH_RESOURCE` | Optional RFC 8707 resource identifier passed in OAuth authorization and token requests. |
@@ -631,8 +641,8 @@ because those native contracts are release-specific.
 - Restrict `allow_origins` to the deployed HTTPS origin.
 - Configure session affinity for multiple UI workers and object storage for
   native file and chart persistence. File-capable profiles enable attachments.
-- Allow the startup lifecycle to finish migrations before routing traffic to
-  a new worker; the health endpoint becomes available afterward.
+- Route traffic to a new worker only after its health check passes; the
+  endpoint answers once startup migrations finish.
 
 See Chainlit's documentation for
 [password callbacks](https://docs.chainlit.io/authentication/password),

@@ -31,6 +31,7 @@ Open WebUI runtime owns its dependencies.
 | --- | --- | --- |
 | `api` | Example LangGraph API | `ghcr.io/ilkersigirci/lgos-demo-api` |
 | `files_api` | OpenAI Files API backed by S3 | `ghcr.io/ilkersigirci/lgos-files-api` |
+| `api-coding-agent` | Coding-agent showcase with a persistent workspace (currently Codex) | Local image build during Compose startup |
 | `ui/chainlit_ui` | Chainlit client | `ghcr.io/ilkersigirci/lgos-chainlit` |
 | `ui/openwebui` | Open WebUI Function sync and raw-upload policy | Host-run locked sync tool plus the unchanged pinned official image |
 
@@ -47,7 +48,8 @@ and Bifrost are both first-class UI gateways. LiteLLM's image is configured in
 UI connects to an upstream container directly. Responses and Files use each
 gateway's normal OpenAI routes, and MCP uses the same gateway root and client
 credential. Metadata comes from LiteLLM's native
-`/model/info` or Bifrost's model-detail pass-through.
+`/model/info` or Bifrost's native `/v1/models` attributes, populated by the
+demo's declarative sync jobs.
 
 LiteLLM uses the public `ghcr.io/ilkersigirci/homeserver-litellm` image by
 default. Configurable defaults live in `demo/.env.example`, not in task-runner or
@@ -64,8 +66,13 @@ mock or SSO login, or enable [delegated OAuth](https://github.com/ilkersigirci/l
 This mode starts no gateway container.
 
 The `just demo/compose [--dev] [--otel]` variants wait for the
-selected gateway and its dependencies, including Chainlit, sync both catalogs
-when using LiteLLM, then start and sync Open WebUI. For an independently
+selected gateway and its dependencies, including Chainlit, sync all graph catalogs
+in the selected gateway, then start and sync Open WebUI. Bifrost first prepares
+zero-priced graph rows and then publishes complete LGOS metadata through its
+native catalog API. Run `just demo/sync-bifrost [--dev]` and
+`just demo/sync-openwebui` after graph metadata changes. See
+[Bifrost catalog sync](../docs/demo/bifrost.md#declarative-model-metadata).
+For an independently
 deployed API, run
 `just demo/sync-litellm` after
 its health check. The source URL and public namespace are explicit arguments;
@@ -80,20 +87,17 @@ Current verification exposes narrower upstream normalization limitations.
 The bundled Bifrost's normalized `/openai/v1` route preserves the tested native
 Responses fields, file input, commentary `phase`, continuation, `store: false`,
 and upstream error `type` and `param`, but not LGOS model-detail extensions.
-Bifrost's raw pass-through
-preserves successful-request contracts, while virtual-key governance rejects
-the unknown-model error case before pass-through. The bundled LiteLLM preserves
-native streaming and commentary, and records successful managed Responses
-requests in its spend logs, but rewrites standard error metadata. Direct LGOS
-and Bifrost's raw pass-through remain protocol references. LiteLLM exposes no
-demo pass-through routes. UI inference uses LiteLLM's managed Responses route or
-Bifrost's native Responses route according to `OPENAI_GATEWAY_TYPE`.
+The bundled LiteLLM preserves native streaming and commentary, and records
+successful managed Responses requests in its spend logs, but rewrites standard
+error metadata. Direct LGOS remains the protocol reference. UI inference uses
+LiteLLM's managed Responses route or Bifrost's native Responses route according
+to `OPENAI_GATEWAY_TYPE`.
 Run `just demo/test-bifrost --editable` and
 `just demo/test-litellm --editable` for the current compatibility
 matrix.
 
 Polling-only background execution is optional. Select LiteLLM or Bifrost,
-enable `DEMO_API_BACKGROUND_ENABLED`, add `background` to `COMPOSE_PROFILES`,
+set `LGOS_BACKGROUND=hatchet`, add `background` to `COMPOSE_PROFILES`,
 configure `HATCHET_CLIENT_TOKEN`, and run `just demo/compose`. Both UIs can then
 run `advanced-graph`, the model-free `background-mock`, or the deterministic
 [`background-interrupt`](../docs/demo/graphs/background-interrupt.md) review flow
@@ -101,12 +105,20 @@ in the background. Run
 `just demo/test-background-gateway --editable` and see the
 [background guide](../docs/how-to-guides/background-responses.md).
 
-Compose persists PostgreSQL, Bifrost, and Open WebUI state as ignored host bind
-mounts under `docker/volumes/`. Each service directory is tracked with a
-`.gitkeep`; runtime contents remain ignored. Services run as the configured
+Compose persists PostgreSQL, Bifrost, and Open WebUI state and the coding-agent
+workspace and Codex threads as ignored host bind mounts under `docker/volumes/`.
+Each service directory is tracked with a `.gitkeep`; runtime contents remain
+ignored. Services run as the configured
 `PUID:PGID` with read-only container filesystems, limited writable tmpfs paths,
 dropped Linux capabilities, and explicit CPU, memory, PID, and file-descriptor
 limits.
+
+The [coding-agent showcase](../docs/demo/graphs/coding-agent.md)
+runs as a separate service in the stack. Select `lgos-api-coding-agent/coding-agent`
+in either UI to edit files and run commands or tests in its persistent workspace,
+`docker/volumes/lgos-coding-agent`. Conversations share the workspace and run one at
+a time. Codex uses its own upstream model settings and the container's execution
+permissions. Use it with trusted users and repositories.
 
 ## Run containers independently
 
@@ -158,11 +170,7 @@ so the official Open WebUI image remains unchanged. Compose configures Open
 WebUI's gateway MCP connection from the same root and key.
 
 Compose starts each selected service's dependencies. The APIs, background
-worker, and Chainlit apply pending migrations during startup before serving
-work. PostgreSQL locks serialize concurrent migrations. The `lgos-mcp-db-setup`
-job waits for API A and Chainlit to become healthy, then provisions the demo's
-MCP reporting views and permissions using `psql`. DBHub starts after the job
-succeeds and receives only the restricted reporting credentials.
+worker, and Chainlit apply pending database migrations when they start.
 
 ## Run local processes
 
@@ -234,7 +242,7 @@ Set `PUID` and `PGID` in `demo/.env` to the host identity that owns
 ## Automation
 
 When this directory is copied to a repository root, its `.github/workflows`
-files test all four locked projects and build the API, Files API, and Chainlit
+files test all five locked projects and build the API, Files API, and Chainlit
 images. The
 LGOS source repository carries thin root workflow wrappers while the directory
 is kept in-tree. Both sets of workflows use the composite actions owned by this
@@ -263,7 +271,7 @@ just demo/check
 Use `just demo/check --editable` to run the API tests and type
 checks against the parent source tree.
 
-Use `just demo/format` to format the Justfile and fix Python style in all four
+Use `just demo/format` to format the Justfile and fix Python style in all five
 projects. Pass pytest options after `--`, for example
 `just demo/test --editable -- -x` or `just demo/test-bifrost --editable -- -vv`.
 

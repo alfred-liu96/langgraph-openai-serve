@@ -53,6 +53,19 @@ Repository tasks require Bash and [Just 1.58.0 or newer](https://just.systems/).
 Run `just` for package recipes and `just demo/` for independent demo workflows.
 Use `just --usage <recipe>` to see a recipe's options and defaults.
 
+## Generate An Application
+
+Create an independent project that `lgos serve` runs, with example graphs,
+tests, developer guidance, and Docker:
+
+```bash
+uvx cookiecutter https://github.com/ilkersigirci/langgraph-openai-serve.git \
+  --directory lgos-starter-template
+```
+
+See the [starter guide](docs/starter-template.md) for setup, and
+[Run The LGOS Server](docs/how-to-guides/server.md) to serve your own registry.
+
 ## Quick Demo
 
 From this repository, prepare the demo environment and PostgreSQL:
@@ -109,7 +122,8 @@ The complete Compose demo lets one `OPENAI_GATEWAY_TYPE=litellm|bifrost`
 setting place either gateway in front of both maintained UI clients. Chainlit
 and Open WebUI use normal managed/native Responses and Files routes. Metadata
 comes from LiteLLM's native `/model/info` after [model sync](docs/demo/litellm-sync.md),
-or Bifrost's catalog-detail pass-through. Neither UI connects directly to LGOS. The
+or Bifrost's native `/v1/models` after [catalog sync](docs/demo/bifrost.md#declarative-model-metadata).
+Neither UI connects directly to LGOS. The
 PostgreSQL-persistent Chainlit client uses a shared mock login by default, with
 OIDC login available as an opt-in mode. See the
 [Chainlit demo](docs/demo/chainlit.md).
