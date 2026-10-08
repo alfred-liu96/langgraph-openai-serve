@@ -2,14 +2,12 @@
 
 import argparse
 import os
-from collections.abc import Iterable, Sequence
 from urllib.parse import quote
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx2
+from langgraph_openai_serve.api.models.schemas import ModelDetails, ModelList
 from pydantic import BaseModel, JsonValue, ValidationError
-
-from lgos_demo_api.utils.model_catalog import read_model_catalog, validate_namespace
 
 
 class ModelInfo(BaseModel):
@@ -38,20 +36,6 @@ def _is_owned(deployment: Deployment, *, prefix: str) -> bool:
     )
 
 
-def _owned_deployments(
-    names: Iterable[str], deployments: Sequence[Deployment], *, prefix: str
-) -> dict[str, Deployment | None]:
-    """Reject ambiguous or independently managed matches before any writes."""
-    existing: dict[str, Deployment | None] = {}
-    for name in names:
-        matches = [item for item in deployments if item.model_name == name]
-        if len(matches) > 1 or (matches and not _is_owned(matches[0], prefix=prefix)):
-            msg = f"{name}: conflicts with ambiguous or non-sync-owned deployment"
-            raise ValueError(msg)
-        existing[name] = matches[0] if matches else None
-    return existing
-
-
 def sync_models(
     source: httpx2.Client,
     gateway: httpx2.Client,
@@ -62,15 +46,39 @@ def sync_models(
     dry_run: bool = False,
 ) -> dict[str, str]:
     """Reconcile namespaced LGOS models without changing other deployments."""
-    validate_namespace(prefix)
-    desired = {
-        f"{prefix}/{name}": model for name, model in read_model_catalog(source).items()
-    }
+    if not prefix or any(char.isspace() or char in "/*" for char in prefix):
+        msg = "Model namespace must be non-empty, without whitespace, / or *"
+        raise ValueError(msg)
+
+    response = source.get("models")
+    response.raise_for_status()
+    catalog = ModelList.model_validate(response.json())
+    desired: dict[str, ModelDetails] = {}
+    for summary in catalog.data:
+        response = source.get(f"models/{quote(summary.id, safe='')}")
+        response.raise_for_status()
+        model = ModelDetails.model_validate(response.json())
+        if model.id != summary.id or model.owned_by != "langgraph-openai-serve":
+            msg = f"Invalid model detail for {summary.id}"
+            raise ValueError(msg)
+        name = f"{prefix}/{model.id}"
+        if name in desired:
+            msg = f"Duplicate upstream model: {model.id}"
+            raise ValueError(msg)
+        desired[name] = model
 
     response = gateway.get("model/info")
     response.raise_for_status()
     deployments = Deployments.model_validate(response.json()).data
-    existing = _owned_deployments(desired, deployments, prefix=prefix)
+    # Validate every desired name before writing. Ambiguous or independently
+    # managed matches need an operator decision, not a guessed target.
+    existing: dict[str, Deployment | None] = {}
+    for name in desired:
+        matches = [item for item in deployments if item.model_name == name]
+        if len(matches) > 1 or (matches and not _is_owned(matches[0], prefix=prefix)):
+            msg = f"{name}: conflicts with ambiguous or non-sync-owned deployment"
+            raise ValueError(msg)
+        existing[name] = matches[0] if matches else None
 
     results: dict[str, str] = {}
     for name, model in desired.items():
@@ -172,12 +180,12 @@ def main() -> None:
         for name, action in results.items():
             print(f"{name}: {'would be ' if args.dry_run else ''}{action}")
     except ValidationError:
-        msg = "LiteLLM model sync failed: invalid catalog response"
-        raise SystemExit(msg) from None
+        raise SystemExit(
+            "LiteLLM model sync failed: invalid catalog response"
+        ) from None
     except (httpx2.HTTPError, ValueError, KeyError) as exc:
         # Do not print response bodies: management errors can echo credentials.
-        msg = f"LiteLLM model sync failed: {exc}"
-        raise SystemExit(msg) from None
+        raise SystemExit(f"LiteLLM model sync failed: {exc}") from None
 
 
 if __name__ == "__main__":

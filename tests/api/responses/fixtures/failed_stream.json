@@ -2,7 +2,6 @@
   {
     "response": {
       "id": "<response_0>",
-      "access_programs": null,
       "created_at": "<created_at_0>",
       "error": null,
       "incomplete_details": null,
@@ -45,7 +44,6 @@
   {
     "response": {
       "id": "<response_0>",
-      "access_programs": null,
       "created_at": "<created_at_0>",
       "error": null,
       "incomplete_details": null,
@@ -95,7 +93,6 @@
   {
     "response": {
       "id": "<response_0>",
-      "access_programs": null,
       "created_at": "<created_at_0>",
       "error": {
         "code": "server_error",

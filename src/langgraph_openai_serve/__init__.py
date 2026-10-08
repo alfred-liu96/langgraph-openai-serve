@@ -10,7 +10,6 @@ from langgraph_openai_serve.background import (
     execute_background_job,
 )
 from langgraph_openai_serve.core.errors import GraphError, InvalidRequestError
-from langgraph_openai_serve.core.logging import RequestContextFilter
 from langgraph_openai_serve.graph.citations import citation_slice
 from langgraph_openai_serve.graph.client_settings import ClientSettings
 from langgraph_openai_serve.graph.events import status_event
@@ -47,7 +46,6 @@ __all__ = [
     "LanggraphOpenaiServe",
     "NamedCustomToolChoice",
     "NamedFunctionToolChoice",
-    "RequestContextFilter",
     "citation_slice",
     "execute_background_job",
     "status_event",

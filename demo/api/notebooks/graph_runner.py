@@ -53,8 +53,7 @@ def _():
 
     def check_parity(path: str, complete: str, streamed: str):
         if complete != streamed:
-            msg = f"{path} stream and non-stream outputs differ"
-            raise AssertionError(msg)
+            raise AssertionError(f"{path} stream and non-stream outputs differ")
         return {"path": path, "matches": True, "characters": len(complete)}
 
     return (

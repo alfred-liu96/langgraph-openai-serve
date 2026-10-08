@@ -73,8 +73,6 @@ class PreparedResponsesRequest:
 
 class Pipe:
     class Valves(BaseModel):
-        """Configure gateway connections for this Pipe."""
-
         # Open WebUI builds Valves() before any are stored; the demo sync stores
         # the gateway values. SkipJsonSchema keeps the admin form's input types.
         OPENAI_GATEWAY_TYPE: GatewayType | SkipJsonSchema[None] = Field(
@@ -145,7 +143,7 @@ class Pipe:
         async with aclosing(results):
             return await anext(results)
 
-    async def _run(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements] - One lifecycle owns streaming, client tools, and terminal cleanup.
+    async def _run(
         self,
         body: dict[str, Any],
         metadata: dict[str, Any],
@@ -156,13 +154,7 @@ class Pipe:
         event_emitter: OpenWebUIEventEmitter | None,
         host_request: OpenWebUIRequest | None,
     ) -> AsyncGenerator[PipeChunk, None]:
-        """
-        Own one Responses/tool loop for both Pipe response modes.
-
-        Yields:
-            Streaming chunks or the completed non-streaming answer.
-
-        """
+        """Own one Responses/tool loop for both Pipe response modes."""
         answer_parts: list[str] = []
         latest_status = ""
         finished = False
@@ -172,7 +164,7 @@ class Pipe:
             latest_status = f"Background response {status.replace('_', ' ')}."
             await _emit_status(event_emitter, latest_status, done=False)
 
-        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause] - The whole turn shares cancellation, UI error reporting, and status cleanup.
+        try:
             prepared = await self._prepare_request(
                 OpenWebUIBody.model_validate(body),
                 OpenWebUIMetadata.model_validate(metadata),
@@ -211,7 +203,7 @@ class Pipe:
                                     if event.item.type == "message":
                                         phases[event.output_index] = event.item.phase
                                 elif (
-                                    event.type == "response.output_text.delta"  # ruff: ignore[repeated-equality-comparison] - Explicit comparisons preserve discriminated-union narrowing in ty.
+                                    event.type == "response.output_text.delta"
                                     or event.type == "response.refusal.delta"
                                 ) and phases.get(event.output_index) != "commentary":
                                     final_text_streamed = True
@@ -219,7 +211,7 @@ class Pipe:
                                         prepared.model_id, {"content": event.delta}
                                     )
                                 elif (
-                                    event.type == "response.incomplete"  # ruff: ignore[repeated-equality-comparison] - Explicit comparisons preserve discriminated-union narrowing in ty.
+                                    event.type == "response.incomplete"
                                     or event.type == "response.failed"
                                 ):
                                     _raise_for_response(event.response)
@@ -283,8 +275,9 @@ class Pipe:
                         )
                         return
                     if not _all_calls(calls, DISPLAY_FILE_TOOL_NAME):
-                        msg = "LangGraph API returned an unsupported or mixed function-call batch."
-                        raise ValueError(msg)  # ruff: ignore[raise-within-try] - Local validation uses the same error reporting as remote failures.
+                        raise ValueError(
+                            "LangGraph API returned an unsupported or mixed function-call batch."
+                        )
                     outputs = [
                         await _handle_display_file(
                             call,
@@ -331,8 +324,7 @@ class Pipe:
         mcp_tools, openwebui_mcp_names = _openwebui_mcp_tools(tools)
         # Open WebUI enters its native tool loop only for streams.
         if mcp_tools and not streaming:
-            msg = "Open WebUI MCP tool execution requires streaming."
-            raise ValueError(msg)
+            raise ValueError("Open WebUI MCP tool execution requires streaming.")
         transcript_mcp_names = {
             openwebui_name: gateway_name
             for gateway_name, openwebui_name in openwebui_mcp_names.items()
@@ -389,8 +381,9 @@ class Pipe:
             or valves.OPENAI_GATEWAY_BASE_URL is None
             or valves.OPENAI_GATEWAY_API_KEY is None
         ):
-            msg = "The gateway valves are unset; run just demo/sync-openwebui."
-            raise RuntimeError(msg)
+            raise RuntimeError(
+                "The gateway valves are unset; run just demo/sync-openwebui."
+            )
         gateway = gateway_config(
             valves.OPENAI_GATEWAY_TYPE, valves.OPENAI_GATEWAY_BASE_URL
         )

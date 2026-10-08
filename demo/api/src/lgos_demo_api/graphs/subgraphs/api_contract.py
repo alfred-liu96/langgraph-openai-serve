@@ -10,7 +10,7 @@ from lgos_demo_api.graphs.subgraphs.schemas import ApiContractState
 from lgos_demo_api.utils.fake_llm import stream_fake_chat_response
 
 
-def collect_contract_checks(state: ApiContractState) -> dict[str, Any]:
+async def collect_contract_checks(state: ApiContractState) -> dict[str, Any]:
     source_text = state.normalized_question or state.question
     normalized = " ".join(source_text.lower().split())
     checks = [

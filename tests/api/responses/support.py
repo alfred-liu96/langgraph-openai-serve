@@ -44,14 +44,10 @@ def _normalize(value: Any, identifiers: dict[str, str] | None = None) -> Any:
     if identifiers is None:
         identifiers = {}
     if isinstance(value, dict):
-        # OpenAI sends whole Unix seconds. A fractional timestamp stays visible
-        # and fails the comparison, as it fails clients that require integers.
         return {
             key: (
                 _placeholder(f"{key}:{item!r}", key, identifiers)
-                if key in {"created_at", "completed_at"}
-                and item is not None
-                and float(item).is_integer()
+                if key in {"created_at", "completed_at"} and item is not None
                 else _normalize(item, identifiers)
             )
             for key, item in value.items()

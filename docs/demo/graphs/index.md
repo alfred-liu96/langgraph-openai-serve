@@ -1,6 +1,6 @@
 # Example Graphs
 
-The demo applications register the following graphs. They demonstrate LGOS features;
+The demo API registers the following graphs. They demonstrate LGOS features;
 none is installed as a built-in model by the `langgraph-openai-serve` package.
 Each registration also supplies a short `GraphConfig.description` used by the
 demo model catalogs.
@@ -12,7 +12,6 @@ demo model catalogs.
 | [`background-mock`](background-mock.md) | Deterministic background execution in an independently deployed worker, with no model call | `background` | Hatchet |
 | [`custom-input-output-context`](core-patterns.md#custom-input-output-context) | Request, output, and typed runtime-context adapters | None | None |
 | [`citation-events`](events-and-citations.md) | Structured OpenAI URL citations with portable Markdown content | None | None |
-| [`coding-agent`](coding-agent.md) | Coding agent with shell execution, file editing, and a persistent workspace | None | Coding-agent service (Codex) and Responses model |
 | [`file-input`](file-input.md) | Central Files API IDs resolved into OpenAI Responses file inputs | `file_inputs` | Central Files API and upstream Responses model |
 | [`mcp-mock`](core-patterns.md#mcp-mock) | Async MCP-style tool discovery and an agent tool loop | None | None |
 | [`mcp-postgres`](mcp-postgres.md) | Read-only database questions with MCP discovery and execution owned by the native UI client | `mcp_tools` | Upstream model, selected gateway, DBHub, and PostgreSQL |
@@ -20,7 +19,6 @@ demo model catalogs.
 | [`multi-node-streaming`](core-patterns.md#multi-node-streaming) | Two sequential fake-model nodes contributing ordered text to one assistant message | None | None |
 | [`response-outcomes`](core-patterns.md#response-outcomes) | Native refusal content and incomplete terminal responses | None | None |
 | [`status-events`](events-and-citations.md) | Portable status updates for native client UI | None | None |
-| [`streaming-long-mock`](core-patterns.md#streaming-long-mock) | A slow, predictable 100-sentence stream for checking streaming, Stop, and the returned history | None | None |
 | [`persistent-plot-agent`](persistent-plot-agent.md) | A tool-calling agent with an editable thread-scoped chart | None | Upstream model, Files API, and PostgreSQL store |
 | [`interruptible-approval`](interruptible-approval.md) | Durable choice-or-text human review before protected actions | `interrupts` | PostgreSQL checkpointer and run coordinator |
 | [`simple-graph`](core-patterns.md#simple-graph) | Streamed model output and discoverable runtime settings | None | Upstream chat model |
@@ -45,12 +43,12 @@ or expose event replay.
 
 ## Source Map
 
-Most graph code is owned by the independent `demo/api` project:
+All graph code is owned by the independent `demo/api` project:
 
-- `demo/api/src/lgos_demo_api/registry.py` registers graph names as OpenAI
-  model names for `lgos serve` and `lgos worker`.
-- `demo/api/src/lgos_demo_api/graphs/` contains its graphs and adapters.
-- `demo/api-coding-agent/src/lgos_api_coding_agent/` owns the separately deployed coding-agent showcase, currently backed by Codex.
+- `demo/api/src/lgos_demo_api/app.py` registers graph names as OpenAI model
+  names.
+- `demo/api/src/lgos_demo_api/graphs/` contains every graph and adapter listed
+  above.
 - `demo/api/src/lgos_demo_api/corpus/` contains the Markdown packaged with the
   `lgos-rag` example.
 

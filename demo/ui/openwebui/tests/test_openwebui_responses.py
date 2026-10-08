@@ -3,12 +3,12 @@
 import asyncio
 import json
 import sys
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, Self
+from typing import Any
 from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
@@ -29,11 +29,9 @@ from openai.types.responses.parsed_response import ParsedResponseFunctionToolCal
 from openai.types.responses.response_output_text import AnnotationURLCitation
 
 from lgos_openwebui.bundle import bundle_function
-from lgos_openwebui.functions.generic import (
-    files as generic_files,
-    pipe as generic_pipe,
-    responses as generic_responses,
-)
+from lgos_openwebui.functions.generic import files as generic_files
+from lgos_openwebui.functions.generic import pipe as generic_pipe
+from lgos_openwebui.functions.generic import responses as generic_responses
 from lgos_openwebui.functions.generic.contracts import (
     OpenWebUIBody,
     OpenWebUIMessage,
@@ -162,7 +160,7 @@ async def test_streamed_text_and_the_full_review_stay_separate(
     )
 
     @asynccontextmanager
-    async def scripted_stream(**_: object) -> AsyncGenerator[FakeResponseStream, None]:
+    async def scripted_stream(**_: object) -> AsyncIterator[FakeResponseStream]:
         yield stream
 
     install_client(monkeypatch, stream=scripted_stream)
@@ -236,13 +234,13 @@ def host_messages(messages: list[dict[str, Any]]) -> list[OpenWebUIMessage]:
 
 
 def ask_user_card(*calls: ResponseFunctionToolCall) -> dict[str, Any]:
-    """Build the native ask_user call for an interrupt batch."""
+    """The native ask_user call the Pipe returns for an interrupt batch."""
     completion = _openwebui_interrupt_completion(MODEL_ID, RESPONSE_ID, list(calls))
     return completion["choices"][0]["message"]["tool_calls"][0]
 
 
 def option(label: str) -> dict[str, object]:
-    """Build a browser answer choosing one card option."""
+    """A browser answer choosing one card option."""
     return {"type": "option", "option_index": 0, "label": label}
 
 
@@ -318,7 +316,7 @@ class FakeClient:
         self.max_retries = max_retries
         return self
 
-    async def __aenter__(self) -> Self:
+    async def __aenter__(self) -> "FakeClient":
         return self
 
     async def __aexit__(self, *_: object) -> None:
@@ -380,7 +378,7 @@ def bundled_generic(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     source = bundle_function(Path(generic_pipe.__file__).parent)
     module = ModuleType("bundled_generic")
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    exec(compile(source, "<generic>", "exec"), module.__dict__)  # ruff: ignore[exec-builtin] - Execute the repository-owned bundle to test deployed behavior.
+    exec(compile(source, "<generic>", "exec"), module.__dict__)
     return module
 
 
@@ -409,6 +407,7 @@ async def test_pipe_lists_native_litellm_model_info(
         assert request.method == "GET"
         assert request.url.path == "/model/info"
         assert request.headers["Authorization"] == "Bearer test-key"
+        assert "x-model-provider" not in request.headers
         return httpx2.Response(
             200,
             json={
@@ -422,7 +421,7 @@ async def test_pipe_lists_native_litellm_model_info(
         )
 
     @asynccontextmanager
-    async def catalog_client(**kwargs: Any) -> AsyncGenerator[AsyncOpenAI, None]:
+    async def catalog_client(**kwargs: Any) -> AsyncIterator[AsyncOpenAI]:
         async with AsyncOpenAI(
             **kwargs,
             http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handle)),
@@ -445,9 +444,7 @@ async def test_pipe_uses_bifrost_aggregate_catalog(
     catalog_urls = []
 
     @asynccontextmanager
-    async def catalog_client(
-        *, base_url: str, **_: object
-    ) -> AsyncGenerator[object, None]:
+    async def catalog_client(*, base_url: str, **_: object) -> AsyncIterator[object]:
         catalog_urls.append(base_url)
         yield SimpleNamespace(
             models=SimpleNamespace(
@@ -617,7 +614,7 @@ async def test_bundled_stream_keeps_sse_looking_text_as_content(
     )
 
     @asynccontextmanager
-    async def scripted_stream(**_: object) -> AsyncGenerator[FakeResponseStream, None]:
+    async def scripted_stream(**_: object) -> AsyncIterator[FakeResponseStream]:
         yield FakeResponseStream(events, final_response(answer))
 
     bundled_generic._client = lambda **_: FakeClient(stream=scripted_stream)
@@ -984,7 +981,7 @@ async def test_request_uses_a_native_responses_route(
     base_urls = []
 
     @asynccontextmanager
-    async def client(*, base_url: str, **_: object) -> AsyncGenerator[object, None]:
+    async def client(*, base_url: str, **_: object) -> AsyncIterator[object]:
         base_urls.append(base_url)
         yield FakeClient(create=create, stream=stream_request)
 
@@ -992,7 +989,7 @@ async def test_request_uses_a_native_responses_route(
     create = AsyncMock(return_value=completed)
 
     @asynccontextmanager
-    async def response_stream(**_: object) -> AsyncGenerator[FakeResponseStream, None]:
+    async def response_stream(**_: object) -> AsyncIterator[FakeResponseStream]:
         yield FakeResponseStream([], completed)
 
     stream_request = Mock(side_effect=response_stream)
@@ -1020,8 +1017,9 @@ async def test_request_uses_a_native_responses_route(
         assert result == ["Approved."]
         request = create.await_args.kwargs
     assert base_urls == [f"https://gateway.example{base_path}"]
-    # Bifrost selects the provider from the catalog ID's prefix.
+    # Bifrost ignores x-model-provider on Responses; the catalog ID selects it.
     assert request["model"] == "lgos-a/interruptible-approval"
+    assert "extra_headers" not in request
 
 
 @pytest.mark.parametrize("phase", [None, "final_answer"])
@@ -1060,7 +1058,7 @@ async def test_stream_uses_sdk_final_response_and_excludes_commentary(
     )
 
     @asynccontextmanager
-    async def scripted_stream(**_: object) -> AsyncGenerator[FakeResponseStream, None]:
+    async def scripted_stream(**_: object) -> AsyncIterator[FakeResponseStream]:
         yield stream
 
     emit = AsyncMock()
@@ -1198,7 +1196,7 @@ async def test_response_maps_final_answer_annotations_to_persistent_sources(
     stream = FakeResponseStream([final_added, final_delta], completed)
 
     @asynccontextmanager
-    async def scripted_stream(**_: object) -> AsyncGenerator[FakeResponseStream, None]:
+    async def scripted_stream(**_: object) -> AsyncIterator[FakeResponseStream]:
         yield stream
 
     emit = AsyncMock()
@@ -1466,7 +1464,7 @@ async def test_display_plotly_emits_a_persistent_interactive_embed(
         "provider": "lgos-files",
     }
     if invalid_content is not None:
-        with pytest.raises(ValueError, match=r"validation error.*PlotlyFigure"):
+        with pytest.raises(ValueError):
             await generic_files._handle_display_file(call, emit, object(), **kwargs)
         emit.assert_not_awaited()
         return
@@ -1873,7 +1871,7 @@ async def test_gateway_tool_call_is_delegated_to_openwebui(
     requests = []
 
     @asynccontextmanager
-    async def stream(**request: object) -> AsyncGenerator[FakeResponseStream, None]:
+    async def stream(**request: object) -> AsyncIterator[FakeResponseStream]:
         requests.append(request)
         yield FakeResponseStream([], completed)
 

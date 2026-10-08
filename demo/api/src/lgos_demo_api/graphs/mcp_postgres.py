@@ -9,7 +9,7 @@ from langgraph_openai_serve import (
     NamedFunctionToolChoice,
 )
 
-from lgos_demo_api.utils import client_tools
+from lgos_demo_api.graphs import simple_external_tools as external_tools
 
 _TOOL_NAMES = frozenset(
     {
@@ -47,9 +47,9 @@ State limitations or query errors plainly.
 def request_to_input(
     request: GraphRequest,
     messages: list[BaseMessage],
-) -> client_tools.ClientToolsState:
+) -> external_tools.ExternalToolsState:
     """Keep only this demo's database tools at the graph boundary."""
-    state = client_tools.request_to_input(request, messages)
+    state = external_tools.request_to_input(request, messages)
     tools = tuple(tool for tool in state.tools if tool.name in _TOOL_NAMES)
     if isinstance(state.tool_choice, NamedFunctionToolChoice) and not any(
         tool.name == state.tool_choice.name for tool in tools
@@ -58,7 +58,7 @@ def request_to_input(
     return state.model_copy(update={"tools": tools})
 
 
-def _needs_database_tool(state: client_tools.ClientToolsState) -> bool:
+def _needs_database_tool(state: external_tools.ExternalToolsState) -> bool:
     """Require fresh database evidence after the latest user message."""
     latest_user = max(
         (
@@ -83,10 +83,10 @@ def _needs_database_tool(state: client_tools.ClientToolsState) -> bool:
 
 
 async def query_database(
-    state: client_tools.ClientToolsState,
+    state: external_tools.ExternalToolsState,
 ) -> dict[str, list[AIMessage]]:
     """Request gateway MCP tools, then interpret their returned evidence."""
-    response = await client_tools.invoke_client_tool_model(
+    response = await external_tools.invoke_client_tool_model(
         state,
         system_prompt=_SYSTEM_PROMPT,
         temperature=0,
@@ -95,7 +95,7 @@ async def query_database(
     return {"messages": [response]}
 
 
-workflow = StateGraph(client_tools.ClientToolsState)
+workflow = StateGraph(external_tools.ExternalToolsState)
 workflow.add_node("query_database", query_database)
 workflow.add_edge("query_database", END)
 workflow.set_entry_point("query_database")

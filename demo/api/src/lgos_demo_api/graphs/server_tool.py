@@ -9,7 +9,6 @@ from langchain_core.messages import AIMessage, AnyMessage, SystemMessage, ToolMe
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI, custom_tool
 from langgraph.config import get_stream_writer
-from langgraph.constants import TAG_NOSTREAM
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -49,22 +48,20 @@ class ServerToolState(BaseModel):
     messages: Annotated[list[AnyMessage], add_messages]
 
 
-def _chat_model(*, private: bool = False) -> ChatOpenAI:
+def _chat_model(*, disable_streaming: bool = False) -> ChatOpenAI:
     return ChatOpenAI(
         model=settings.OPENAI_MODEL,
         base_url=settings.OPENAI_BASE_URL,
         api_key=settings.OPENAI_API_KEY,
         use_responses_api=True,
         store=False,
-        # LangGraph emits none of a nostream call's output in its messages stream.
-        tags=[TAG_NOSTREAM] if private else None,
+        disable_streaming=disable_streaming,
     )
 
 
 @custom_tool
 def lgos_package_version(distribution: str) -> str:
-    """
-    Get an installed server package version.
+    """Get an installed server package version.
 
     Input one of: langgraph-openai-serve, langgraph, langchain,
     langchain-openai, or openai.
@@ -87,11 +84,10 @@ async def web_search(query: str) -> tuple[str, dict[str, str]]:
     """Search the public web through the configured backend."""
     query = query.strip()
     if not query:
-        msg = "web_search requires a non-empty query"
-        raise ValueError(msg)
+        raise ValueError("web_search requires a non-empty query")
     if settings.WEB_SEARCH_BACKEND == "openai":
         result = await (
-            _chat_model(private=True)
+            _chat_model(disable_streaming=True)
             .bind_tools([{"type": "web_search"}], tool_choice="required")
             .ainvoke(query)
         )
@@ -162,7 +158,7 @@ def create_server_tool_graph() -> CompiledStateGraph[
 ]:
     """Select tools once, execute them, then stream an answer with citations."""
     model = _chat_model()
-    internal_model = _chat_model(private=True)
+    internal_model = _chat_model(disable_streaming=True)
 
     def start(
         _state: ServerToolState, runtime: Runtime[GraphRequest]

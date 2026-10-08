@@ -13,11 +13,9 @@ def interrupt_review(call: ResponseFunctionToolCall) -> HumanReview:
     try:
         payload = json.loads(call.arguments)
     except (TypeError, ValueError) as exc:
-        msg = "Interrupt arguments must be valid JSON."
-        raise ValueError(msg) from exc
+        raise ValueError("Interrupt arguments must be valid JSON.") from exc
     if not isinstance(payload, dict):
-        msg = "Interrupt arguments must be a JSON object."
-        raise ValueError(msg)  # ruff: ignore[type-check-without-type-error] - Malformed decoded payloads use the existing ValueError validation contract.
+        raise ValueError("Interrupt arguments must be a JSON object.")
 
     raw_choices = payload.get("choices")
     choices = (

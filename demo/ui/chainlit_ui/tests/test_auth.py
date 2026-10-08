@@ -1,6 +1,6 @@
 """Demo authentication policy and gateway credential tests."""
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,9 +34,7 @@ def delegated_store(monkeypatch: pytest.MonkeyPatch) -> Mock:
 
 
 @asynccontextmanager
-async def chat_session(
-    user: cl.User, token: str
-) -> AsyncGenerator[WebsocketSession, None]:
+async def chat_session(user: cl.User, token: str) -> AsyncIterator[WebsocketSession]:
     session = WebsocketSession(
         id=uuid4().hex,
         socket_id=uuid4().hex,
@@ -178,7 +176,7 @@ async def test_delegated_chat_uses_new_credentials_and_stops_after_logout(
     async def token(session_id: str, identifier: str) -> str:
         assert (session_id, identifier) == ("session", "alice")
         if current_token is None:
-            raise OAuthLoginRequired
+            raise OAuthLoginRequired()
         return current_token
 
     def gateway(request: httpx2.Request) -> httpx2.Response:

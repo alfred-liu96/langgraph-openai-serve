@@ -20,7 +20,7 @@ user_message_markdown = true
 user_message_autoscroll = true
 assistant_message_autoscroll = true
 auto_tag_thread = true
-edit_message = true
+edit_message = false
 allow_thread_sharing = false
 favorites = false
 
@@ -49,7 +49,7 @@ allowed_urls = []
 name = "LangGraph OpenAI Serve"
 description = "OpenAI-compatible LangGraph demo"
 confirm_new_chat = true
-cot = "tool_call"
+cot = "hidden"
 alert_style = "classic"
 # chainlit-utils fills the chat input with dictated speech; see on_audio_end in chat.py.
 custom_js = "/public/chainlit-utils/dictation.js"

@@ -102,8 +102,9 @@ Direct JavaScript clients can read the property normally, and the
 [OpenAI Python SDK exposes it through `model_extra`](https://github.com/openai/openai-python#making-customundocumented-requests).
 An intermediary may rebuild a retrieved model from the standard fields and drop
 extensions. For one LGOS deployment, a client can use one OpenAI base URL for
-model listing, model retrieval, Responses, and Chat Completions. A federating
-gateway may expose a normalized catalog for provider and model
+model listing, model retrieval, Responses, and Chat Completions; that URL may
+be an authenticated proxy pass-through. A
+federating gateway may expose a normalized catalog for provider and model
 routing, but that catalog is not necessarily a source of LGOS descriptions or
 capabilities. Standard Responses requests do not depend on the extension. A UI
 that offers graph-specific settings or capability controls must obtain the
@@ -111,11 +112,6 @@ selected graph's full metadata through a route that preserves it. The demo's
 LiteLLM clients read native `/model/info`, using `model_name` for routing and
 `model_info.lgos` for the extension. An [LGOS-owned sync](../demo/litellm-sync.md)
 copies the detail into that native field; the UIs never contact LGOS directly.
-Bifrost clients decode the equivalent JSON string from
-`additional_attributes.lgos` on native `/v1/models`. Its
-[catalog sync](../demo/bifrost.md#declarative-model-metadata) prepares base pricing
-rows and publishes complete LGOS details through Bifrost's native management
-API. The `/openai/v1/models` conversion still drops those attributes.
 Concrete gateway configurations and native Responses requirements are documented under
 [OpenAI-Compatible Proxies](../how-to-guides/openai-proxies.md).
 
@@ -363,24 +359,12 @@ event handling and [Request Cancellation](langgraph-integration.md#request-cance
 for request-scoped disconnect cancellation, proxy behavior, and cooperative
 limits.
 
-While a graph produces no output, such as during a long tool call, LGOS sends an
-SSE comment (`: ping`) every 15 seconds, as FastAPI's native SSE responses do, so
-idle proxy timeouts do not close the stream; SSE clients, including the OpenAI
-SDKs, ignore comments. Streams also send `Cache-Control: no-cache` and
-`X-Accel-Buffering: no`, which stops Nginx from buffering them.
-
 LGOS aggregates usage reported by LangChain model calls across the graph run.
 Completed and incomplete Responses include it in `usage`, and a Responses stream
 carries it on its terminal Response object. Chat streams add the standard final
 empty-choices usage chunk only when the request sets
 `stream_options={"include_usage": true}`. When underlying providers report no
 usage, LGOS omits it rather than estimating tokens.
-
-A model call that streams reports usage only when its request asks for it, and
-LangChain's `ChatOpenAI` asks automatically only for OpenAI's default URL. Set
-[`stream_usage=True`](https://reference.langchain.com/python/langchain-openai/chat_models/ChatOpenAI/stream_usage)
-on models that stream through another base URL, such as a gateway. This includes
-private calls tagged `nostream`, which still stream from the provider.
 
 ### Assistant Text Parity
 
@@ -503,11 +487,7 @@ status; graph adapters such as `context_factory` may raise it too. Shared
 handlers translate FastAPI validation and HTTP errors into the same envelope.
 A `GraphError` or any other unexpected failure returns HTTP 500 with
 `type: "server_error"` and the message `Internal server error`; the details are
-logged, not returned. A LangChain `ContextOverflowError`, which provider
-integrations such as `langchain-openai` raise when a model call exceeds the
-context window, returns HTTP 400 with `code: "context_length_exceeded"` instead,
-so OpenAI clients do not retry it. Streams and background Responses report it as
-`server_error`, like any other graph failure.
+logged, not returned.
 
 Invalid runtime settings return HTTP 400 with
 `param: "metadata.lgos_settings"`. A proxy-stripped model
@@ -620,8 +600,8 @@ completed searches emit
 
 Streaming requests also subscribe to LangGraph `messages`. Answer tokens are
 emitted immediately, and citations are attached before the message completes.
-Graphs tag private tool-selection model calls with LangGraph's `nostream` tag so
-their text never enters the public answer. User-facing
+Graphs configure private tool-selection `ChatOpenAI` calls with
+`disable_streaming=True` so their text never enters the public answer. User-facing
 progress uses the existing `status_event()` contract.
 Status events remain progress-only; they do not carry tool call IDs or results.
 Completed tool inputs still use one input delta; LGOS does not parse partial

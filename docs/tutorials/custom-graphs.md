@@ -234,15 +234,11 @@ When several public model calls contribute text, return their completed messages
 through the graph's `messages` channel and make `output_to_message` render the
 same ordered content for a complete response.
 
-!!! tip "Keep private model calls out of the stream"
+!!! tip "Disable private model streams"
 
-    Tag private model calls with LangGraph's
-    [`nostream`](https://docs.langchain.com/oss/python/langgraph/streaming#omit-messages-from-the-stream)
-    tag, for example `ChatOpenAI(..., tags=[TAG_NOSTREAM])` with `TAG_NOSTREAM`
-    from `langgraph.constants`. The call still runs and returns its output, but
-    LangGraph emits none of its tokens, so internal graph work never appears as
-    assistant output while public model calls continue to stream normally.
-    Reserve `disable_streaming=True` for models that cannot stream.
+    Configure private `ChatOpenAI` calls with `disable_streaming=True`. This
+    prevents internal graph work from appearing as assistant output while public
+    model calls continue to stream normally.
 
 ## Status Updates
 

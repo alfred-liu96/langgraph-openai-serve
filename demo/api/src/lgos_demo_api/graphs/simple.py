@@ -1,7 +1,6 @@
 """Simple LLM-backed graph used by the demo API."""
 
-from collections.abc import Sequence
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langchain_openai import ChatOpenAI

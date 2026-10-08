@@ -5,7 +5,6 @@ from typing import Any
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from langchain_core.exceptions import ContextOverflowError
 from openai.types.shared import ErrorObject
 from starlette.exceptions import HTTPException
 
@@ -40,7 +39,6 @@ def configure_openai_error_handlers(app: FastAPI) -> None:
     for exc_class in (
         InvalidRequestError,
         GraphError,
-        ContextOverflowError,
         HTTPException,
         RequestValidationError,
         Exception,
@@ -70,15 +68,6 @@ async def _openai_error_response(  # ruff: ignore[unused-async]
         case RequestValidationError():
             status_code = status.HTTP_400_BAD_REQUEST
             error = _validation_error(exc)
-        case ContextOverflowError():
-            # Answer as OpenAI does: a retryable 500 would make OpenAI clients
-            # rerun the whole graph into the same limit.
-            status_code = status.HTTP_400_BAD_REQUEST
-            error = ErrorObject(
-                message="The input exceeds the model's context window.",
-                type="invalid_request_error",
-                code="context_length_exceeded",
-            )
         case HTTPException() if exc.status_code < status.HTTP_500_INTERNAL_SERVER_ERROR:
             status_code = exc.status_code
             error = ErrorObject(message=str(exc.detail), type="invalid_request_error")

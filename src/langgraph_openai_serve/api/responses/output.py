@@ -42,7 +42,7 @@ class ResponseContext:
 
     request: ResponseCreateRequest
     id: str
-    created_at: int
+    created_at: float
 
     @classmethod
     def for_run(
@@ -51,7 +51,7 @@ class ResponseContext:
         *,
         run_id: str | None = None,
         response_id: str | None = None,
-        created_at: int | None = None,
+        created_at: float | None = None,
     ) -> "ResponseContext":
         """
         Build context, binding an interrupt response ID when run_id is present.
@@ -68,8 +68,7 @@ class ResponseContext:
         return cls(
             request=request,
             id=response_id,
-            # OpenAI sends whole Unix seconds; strict clients reject fractions.
-            created_at=int(time.time()) if created_at is None else created_at,
+            created_at=time.time() if created_at is None else created_at,
         )
 
     def response(
@@ -90,7 +89,7 @@ class ResponseContext:
                 "created_at": self.created_at,
                 "status": status,
                 "background": bool(request.background),
-                "completed_at": int(time.time()) if status == "completed" else None,
+                "completed_at": time.time() if status == "completed" else None,
                 "error": error,
                 "incomplete_details": incomplete_details,
                 "instructions": request.instructions,

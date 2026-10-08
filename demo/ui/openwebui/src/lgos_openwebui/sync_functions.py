@@ -108,7 +108,7 @@ def sync_function_valves(
 
 def main() -> None:
     """Synchronize the bundled Functions, gateway valves, and Workspace Models."""
-    try:  # ruff: ignore[too-many-statements-in-try-clause] - The CLI reports failures from the whole sync operation consistently.
+    try:
         settings = Settings()
         gateway = gateway_config(
             settings.OPENAI_GATEWAY_TYPE,

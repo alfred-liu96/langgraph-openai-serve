@@ -1,7 +1,6 @@
 """Deterministic graph combining portable Markdown with OpenAI URL citations."""
 
-from collections.abc import Sequence
-from typing import Annotated
+from typing import Annotated, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.messages.content import create_citation, create_text_block
@@ -19,10 +18,8 @@ CITATIONS = (
     ),
     (
         "MDN grapefruit image example",
-        (
-            "https://interactive-examples.mdn.mozilla.net/media/cc0-images/"
-            "grapefruit-slice-332-332.jpg"
-        ),
+        "https://interactive-examples.mdn.mozilla.net/media/cc0-images/"
+        "grapefruit-slice-332-332.jpg",
     ),
     (
         "MDN audio example",

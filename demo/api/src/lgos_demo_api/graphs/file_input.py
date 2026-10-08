@@ -73,9 +73,8 @@ async def process_files(state: FileInputState) -> dict[str, list[AIMessage]]:
         api_key="DUMMY",
         max_retries=0,
     ) as files_client:
-        input_content.extend(
-            [await load_file_block(files_client, file_id) for file_id in file_ids]
-        )
+        for file_id in file_ids:
+            input_content.append(await load_file_block(files_client, file_id))
 
     model = ChatOpenAI(
         model=settings.OPENAI_MODEL,

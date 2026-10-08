@@ -33,8 +33,9 @@ async def create_chat_completion(
     bind_log_context(model=chat_request.model, stream=chat_request.stream)
     run = await chat_service.prepare_completion_run(chat_request, graph_registry)
     if chat_request.stream:
-        return stream_owner.start(
+        body = stream_owner.start(
             chat_service.stream_completion(chat_request, run),
             run,
         )
+        return StreamingResponse(body, media_type="text/event-stream")
     return await chat_service.generate_completion(chat_request, run)

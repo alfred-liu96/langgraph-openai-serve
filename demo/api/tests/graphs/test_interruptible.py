@@ -123,7 +123,9 @@ async def test_review_notice_streams_before_the_pause_only(
     request = "Refund order ORDER-123"
     graph = create_interruptible_graph(sqlite_checkpointer)
     registry = GraphRegistry(
-        graphs={"interruptible-approval": create_interruptible_graph_config(graph)},
+        graphs={
+            "interruptible-approval": create_interruptible_graph_config(lambda: graph)
+        },
         run_coordinator=InMemoryRunCoordinator(),
     )
     graph_request, messages = make_graph_input(

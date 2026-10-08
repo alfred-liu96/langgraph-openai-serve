@@ -3,15 +3,11 @@
 import os
 import uuid
 from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph_openai_serve.server import ServerResources, ServerSettings
-from langgraph_openai_serve.server.runtime import open_resources
-from pydantic import SecretStr
 
 from lgos_demo_api.graphs.persistent_plot_agent import (
     ARTIFACT_KEY,
@@ -21,6 +17,7 @@ from lgos_demo_api.graphs.persistent_plot_agent import (
     _thread_namespace,
     create_persistent_plot_agent,
 )
+from lgos_demo_api.persistence.postgres import postgres_runtime
 
 POSTGRES_URI = os.environ.get("DEMO_API_TEST_POSTGRES_URI")
 
@@ -31,11 +28,6 @@ pytestmark = [
         reason="DEMO_API_TEST_POSTGRES_URI is required",
     ),
 ]
-
-
-def _resources(postgres_uri: str) -> AbstractAsyncContextManager[ServerResources]:
-    """Open the PostgreSQL resources that `lgos serve` gives the registry."""
-    return open_resources(ServerSettings(POSTGRES_URI=SecretStr(postgres_uri)))
 
 
 def _tool_call(name: str, args: dict[str, Any], call_id: str) -> AIMessage:
@@ -56,7 +48,7 @@ async def test_persistent_plot_agent_survives_runtime_restart(
     )
 
     try:
-        async with _resources(POSTGRES_URI) as runtime:
+        async with postgres_runtime(POSTGRES_URI) as runtime:
             graph = create_persistent_plot_agent(
                 runtime.store,
                 make_tool_calling_model(
@@ -73,7 +65,7 @@ async def test_persistent_plot_agent_survives_runtime_restart(
                 context=context,
             )
 
-        async with _resources(POSTGRES_URI) as runtime:
+        async with postgres_runtime(POSTGRES_URI) as runtime:
             item = await runtime.store.aget(
                 _thread_namespace(context),
                 ARTIFACT_KEY,
@@ -81,5 +73,5 @@ async def test_persistent_plot_agent_survives_runtime_restart(
             assert item is not None
             assert PlotDocument.model_validate(item.value).q3 == 250
     finally:
-        async with _resources(POSTGRES_URI) as runtime:
+        async with postgres_runtime(POSTGRES_URI) as runtime:
             await runtime.store.adelete(_thread_namespace(context), ARTIFACT_KEY)

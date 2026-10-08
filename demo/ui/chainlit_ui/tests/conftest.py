@@ -1,21 +1,16 @@
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
-from types import ModuleType
-from unittest.mock import AsyncMock, Mock
 
-import anyio
 import chainlit as cl
 import chainlit.config
 import httpx2
 import pytest
 from chainlit.chat_context import chat_contexts
 from chainlit.context import ChainlitContext, init_http_context
-from chainlit.step import StepDict
 from chainlit.user_session import user_sessions
 
 from lgos_chainlit import audio, chat, clients, display_files
-from lgos_chainlit.settings import get_chainlit_settings
 from tests.support import FakeGateway
 
 
@@ -79,52 +74,15 @@ def task_lists(
     chainlit_context: ChainlitContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[dict[str, object]]:
-    """Select task lists and record each state loaded from Chainlit's file route."""
-    monkeypatch.setattr(chat.settings, "STATUS_DISPLAY", "tasklist")
+    """Record each task-list state the browser loads from Chainlit's file route."""
     states: list[dict[str, object]] = []
     send_element = chainlit_context.emitter.send_element
 
     async def record(element) -> None:
         if element["type"] == "tasklist":
             file = chainlit_context.session.files[element["chainlitKey"]]
-            states.append(
-                json.loads(await anyio.Path(file["path"]).read_text(encoding="utf-8"))
-            )
+            states.append(json.loads(Path(file["path"]).read_text()))
         await send_element(element)
 
     monkeypatch.setattr(chainlit_context.emitter, "send_element", record)
     return states
-
-
-@pytest.fixture
-def status_steps(
-    chainlit_context: ChainlitContext,
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[StepDict]:
-    """Record native tool steps sent and updated in the browser."""
-    states: list[StepDict] = []
-    monkeypatch.setattr(chainlit.config.config.ui, "cot", "tool_call")
-
-    async def record(step: StepDict) -> None:
-        if step["type"] == "tool":
-            states.append(step.copy())
-
-    monkeypatch.setattr(chainlit_context.emitter, "send_step", record)
-    monkeypatch.setattr(chainlit_context.emitter, "update_step", record)
-    return states
-
-
-@pytest.fixture
-def application(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
-    monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost/test")
-    monkeypatch.setenv("CHAINLIT_AUTH_SECRET", "test-signing-secret")
-    get_chainlit_settings.cache_clear()
-    # Authentication tests already exercise the mounted Chainlit singleton.
-    # This fixture owns only the host app's startup/shutdown lifecycle.
-    monkeypatch.setattr("chainlit.utils.mount_chainlit", Mock())
-    from lgos_chainlit import main
-
-    monkeypatch.setattr(main.gateway_http_client, "aclose", AsyncMock())
-    monkeypatch.setattr(main, "_close_chainlit_data_layer", AsyncMock())
-    yield main
-    get_chainlit_settings.cache_clear()

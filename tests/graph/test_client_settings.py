@@ -165,15 +165,17 @@ async def test_context_factory_composes_public_and_server_context() -> None:
     }
 
 
-def test_direct_settings_require_the_same_graph_context_schema(
+async def test_direct_settings_require_the_same_graph_context_schema(
     message_graph,
 ) -> None:
+    graph_config = GraphConfig(
+        graph=message_graph,
+        description="DUMMY",
+        client_settings=PublicSettings,
+    )
+
     with pytest.raises(GraphError, match="must use that settings model"):
-        GraphConfig(
-            graph=message_graph,
-            description="DUMMY",
-            client_settings=PublicSettings,
-        )
+        await graph_config.resolve_graph()
 
 
 async def test_lazy_graph_non_null_context_requires_schema(

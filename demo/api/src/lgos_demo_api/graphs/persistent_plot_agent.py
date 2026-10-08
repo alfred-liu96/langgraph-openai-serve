@@ -1,6 +1,6 @@
 """A persistent chart managed by a LangChain agent."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Annotated, Any, Literal
@@ -11,7 +11,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.messages.tool import tool_call
 from langchain_openai import ChatOpenAI
-from langgraph.constants import TAG_NOSTREAM
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph_openai_serve import (
@@ -257,12 +256,7 @@ def _chat_model() -> ChatOpenAI:
         base_url=settings.OPENAI_BASE_URL,
         api_key=settings.OPENAI_API_KEY,
         temperature=0,
-        # ChatOpenAI asks for streamed usage only from OpenAI's default URL; ask
-        # through the gateway too, so LGOS can report streamed calls' usage.
-        stream_usage=True,
-        # Keep every agent turn out of the stream; LGOS sends the final answer
-        # from the graph's state.
-        tags=[TAG_NOSTREAM],
+        disable_streaming=True,
         model_kwargs={"parallel_tool_calls": False},
     )
 
@@ -359,11 +353,11 @@ def _persistence_scope(request: GraphRequest) -> tuple[str, str]:
 
 
 def create_persistent_plot_agent_config(
-    graph: PersistentPlotAgent,
+    graph_factory: Callable[[], PersistentPlotAgent],
 ) -> GraphConfig:
     """Create the OpenAI-facing configuration for the agent."""
     return GraphConfig(
-        graph=graph,
+        graph=graph_factory,
         description="Uses an agent to inspect and edit a persistent revenue chart.",
         context_factory=context_factory,
         client_settings=PersistentPlotAgentSettings,

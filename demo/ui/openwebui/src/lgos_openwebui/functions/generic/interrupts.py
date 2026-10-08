@@ -36,10 +36,6 @@ class AskUserResult(BaseModel):
     answers: dict[str, AskUserAnswer] = Field(default_factory=dict)
 
 
-ASK_USER_MIN_CHOICES = 2
-ASK_USER_MAX_CHOICES = 3
-
-
 def _ask_user_to_resume(
     messages: Sequence[OpenWebUIMessage],
 ) -> tuple[list[dict[str, str]], str] | None:
@@ -66,7 +62,7 @@ def _ask_user_to_resume(
     function = tool_calls[0].function
     card_id = tool_calls[0].id
     if (
-        len(tool_calls) != 1  # ruff: ignore[too-many-boolean-expressions] - Validate the complete interrupt exchange before resuming any work.
+        len(tool_calls) != 1
         or assistant_index != len(messages) - 2
         or function is None
         or function.name != ASK_USER_TOOL_NAME
@@ -106,8 +102,7 @@ def _ask_user_card(
     response_id: str,
     calls: Sequence[ResponseFunctionToolCall],
 ) -> tuple[dict[str, Any], str]:
-    """
-    Present one LGOS interrupt batch as one native question card.
+    """Present one LGOS interrupt batch as one native question card.
 
     Returns the ``ask_user`` call and the complete text of questions too long
     for the card, to show above it.
@@ -215,7 +210,7 @@ def _interrupt_question(call: ResponseFunctionToolCall) -> tuple[dict[str, Any],
         raise ValueError(msg) from exc
     if not isinstance(payload, dict):
         msg = "Open WebUI requires an object interrupt payload."
-        raise ValueError(msg)  # ruff: ignore[type-check-without-type-error] - Malformed decoded payloads use the existing ValueError validation contract.
+        raise ValueError(msg)
     question = payload.get("question")
     choices = payload.get("choices")
     allow_other = payload.get("allow_other", False)
@@ -225,7 +220,7 @@ def _interrupt_question(call: ResponseFunctionToolCall) -> tuple[dict[str, Any],
     # Answers carry the option label, which Open WebUI strips and truncates.
     if (
         not isinstance(choices, list)
-        or not ASK_USER_MIN_CHOICES <= len(choices) <= ASK_USER_MAX_CHOICES
+        or not 2 <= len(choices) <= 3
         or any(
             not isinstance(choice, str)
             or not choice
@@ -236,9 +231,8 @@ def _interrupt_question(call: ResponseFunctionToolCall) -> tuple[dict[str, Any],
         or not isinstance(allow_other, bool)
     ):
         msg = (
-            "Open WebUI interrupts require "
-            f"{ASK_USER_MIN_CHOICES}-{ASK_USER_MAX_CHOICES} unique choices of at "
-            f"most {ASK_USER_LABEL_MAX_LENGTH} characters without surrounding spaces."
+            "Open WebUI interrupts require 2-3 unique choices of at most "
+            f"{ASK_USER_LABEL_MAX_LENGTH} characters without surrounding spaces."
         )
         raise ValueError(msg)
     # Answers are keyed by question ID, which Open WebUI truncates.

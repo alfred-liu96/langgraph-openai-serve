@@ -17,12 +17,10 @@ SESSION_CLAIM = "oauth_session"
 def oidc_client() -> OidcClient:
     """Build the OIDC client from the demo's validated settings."""
     native = get_chainlit_settings()
-    # ruff: disable[assert] - Pydantic settings validation already enforces these invariants.
     assert settings.OAUTH_ISSUER is not None
     assert native.OAUTH_GENERIC_CLIENT_ID is not None
     assert native.OAUTH_GENERIC_CLIENT_SECRET is not None
     assert native.OAUTH_GENERIC_SCOPES is not None
-    # ruff: enable[assert]
     return OidcClient(
         OidcConfig(
             issuer=settings.OAUTH_ISSUER,
@@ -48,7 +46,7 @@ def token_store() -> OAuthTokenStore:
 async def gateway_credential() -> str:
     """Return the shared key or the current user's delegated access token."""
     if not settings.ENABLE_OAUTH_TOKEN_FORWARDING:
-        assert settings.OPENAI_GATEWAY_API_KEY is not None  # ruff: ignore[assert] - Pydantic settings validation already enforces this invariant.
+        assert settings.OPENAI_GATEWAY_API_KEY is not None
         return settings.OPENAI_GATEWAY_API_KEY
     return await delegated_oauth_credential(
         token_store().access_token,
@@ -56,7 +54,7 @@ async def gateway_credential() -> str:
     )
 
 
-async def mock_login(_username: str, _password: str) -> cl.User:  # ruff: ignore[unused-async] - Chainlit awaits this callback.
+async def mock_login(_username: str, _password: str) -> cl.User:
     return cl.User(
         identifier="demo-user",
         display_name="Demo User",
@@ -71,7 +69,7 @@ def configure_auth(app: FastAPI) -> None:
         return
 
     native = get_chainlit_settings()
-    assert native.CHAINLIT_URL is not None  # ruff: ignore[assert] - Pydantic settings validation already enforces this invariant.
+    assert native.CHAINLIT_URL is not None
     ChainlitOAuth(
         provider_id=native.OAUTH_GENERIC_NAME,
         chainlit_url=native.CHAINLIT_URL,
