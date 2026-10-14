@@ -949,7 +949,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-openai-serve"
-version = "0.29.0"
+version = "0.30.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -962,9 +962,9 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/45/c67e5d07531e452b7763be7d53a8061bb302ad589bfcf832617263655139/langgraph_openai_serve-0.29.0.tar.gz", hash = "sha256:eb7ae86e2612c5ea6c16b9f1938c72632f72913fe72d2b75ed0873e85953bf34", size = 62088, upload-time = "2026-10-07T13:24:51.365Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/2a/b379db25d1b2b24ea1857349ae09b8c762d9158ea147bbe3c3a3383143fe/langgraph_openai_serve-0.30.0.tar.gz", hash = "sha256:4fa44e364ae09806902e41b23b8cce632e350b8674af535c869e0b10e9d2067b", size = 62891, upload-time = "2026-10-13T19:17:47.231Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5f/12/538523083253426b91f06cda0bb5dc4006998cc43f4389a197bf0cb01843/langgraph_openai_serve-0.29.0-py3-none-any.whl", hash = "sha256:a2030007d4e9d5ad26320a7daa4ecd5fa1cd937b2bada508352d34e996b25477", size = 87585, upload-time = "2026-10-07T13:24:50.102Z" },
+    { url = "https://files.pythonhosted.org/packages/21/60/100fe010a27798e142bba03a6cce636d44634ea5440e659ab5a6934d65cf/langgraph_openai_serve-0.30.0-py3-none-any.whl", hash = "sha256:2a8d22f9e6916695f71ff28d59adad9e7bcb8b2919702e5ad1aed0fc506ec453", size = 88407, upload-time = "2026-10-13T19:17:45.647Z" },
 ]
 
 [package.optional-dependencies]
@@ -979,6 +979,7 @@ server = [
     { name = "opentelemetry-instrumentation-httpx" },
     { name = "opentelemetry-instrumentation-logging" },
     { name = "opentelemetry-instrumentation-psycopg" },
+    { name = "opentelemetry-sdk" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
     { name = "structlog" },
@@ -1063,7 +1064,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langgraph-openai-serve", extras = ["server"], specifier = ">=0.29.0" },
+    { name = "langgraph-openai-serve", extras = ["server"], specifier = ">=0.30.0" },
     { name = "openai-codex", specifier = ">=0.159.0" },
     { name = "pydantic-settings", specifier = ">=2.9.0" },
 ]
