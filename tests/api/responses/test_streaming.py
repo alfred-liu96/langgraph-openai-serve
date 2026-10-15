@@ -10,7 +10,11 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import StateGraph
 from langgraph.types import interrupt
 from openai import AsyncOpenAI
-from openai.types.responses import ResponseStreamEvent
+from openai.types.responses import (
+    ResponseOutputMessage,
+    ResponseOutputText,
+    ResponseStreamEvent,
+)
 from starlette import status
 
 from langgraph_openai_serve import (
@@ -24,6 +28,11 @@ from langgraph_openai_serve.graph.interrupt import InMemoryRunCoordinator
 from tests.api.responses.support import (
     load_stream_fixture,
     normalize_stream_payloads,
+)
+from tests.graph.support.agent_loop import (
+    FINAL_ANSWER,
+    FIRST_TURN_TEXT,
+    make_agent_loop_graph,
 )
 from tests.graph.support.message import make_message_graph
 from tests.graph.support.schemas import MessageState
@@ -149,6 +158,10 @@ def fastapi_app() -> FastAPI:
             ),
             "failure": GraphConfig(
                 graph=_failing_graph,
+                description="DUMMY",
+            ),
+            "agent-loop": GraphConfig(
+                graph=make_agent_loop_graph,
                 description="DUMMY",
             ),
             "wire-tool": GraphConfig(
@@ -329,6 +342,26 @@ async def test_streamed_final_text_mismatch_ends_in_failed_response(
         event for event in events if event.type == "response.output_item.added"
     )
     assert failed.output[0].id == added.item.id
+
+
+async def test_agent_loop_stream_completes_with_the_final_turn(
+    openai_client: AsyncOpenAI,
+) -> None:
+    events = await _events(openai_client, "agent-loop")
+
+    assert not any(event.type == "error" for event in events)
+    assert events[-1].type == "response.completed"
+    # Every turn's text is a legal delta; the item ends with the final turn.
+    deltas = [
+        event.delta for event in events if event.type == "response.output_text.delta"
+    ]
+    assert "".join(deltas) == FIRST_TURN_TEXT + FINAL_ANSWER
+    completed = events[-1].response
+    final_item = completed.output[0]
+    assert isinstance(final_item, ResponseOutputMessage)
+    final_part = final_item.content[0]
+    assert isinstance(final_part, ResponseOutputText)
+    assert final_part.text == FINAL_ANSWER
 
 
 async def test_responses_citations_use_unicode_inclusive_boundaries(

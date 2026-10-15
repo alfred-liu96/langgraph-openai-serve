@@ -123,7 +123,9 @@ def _final_chunks(
     if streamed_text is None:
         if message_text:
             yield response_builder.text(message_text)
-    elif streamed_text != message_text:
+    elif not streamed_text.endswith(message_text):
+        # Agent loops stream every model turn's text, while the final message
+        # holds only the last turn's; that turn is the streamed suffix.
         msg = "Streamed assistant text did not match the final assistant message."
         raise RuntimeError(msg)
     finish_reason = "tool_calls" if message.tool_calls else "stop"

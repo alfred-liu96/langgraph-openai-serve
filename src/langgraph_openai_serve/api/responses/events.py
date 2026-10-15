@@ -3,7 +3,7 @@
 import uuid
 from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 from langchain_core.messages import AIMessage
 from langgraph.types import UpdatesStreamPart
@@ -41,6 +41,11 @@ from openai.types.responses import (
     ResponseWebSearchCallCompletedEvent,
 )
 from openai.types.responses.response import IncompleteDetails
+
+if TYPE_CHECKING:
+    from openai.types.responses.response_output_text_annotation_added_event import (
+        Annotation,
+    )
 
 from langgraph_openai_serve.api.responses.output import (
     ResponseContext,
@@ -207,7 +212,9 @@ class ResponsesEventBuilder:
                 text = str(message.text)
                 item.text_parts.append(text)
                 yield self._text_delta(item, text)
-        elif item is not None and item.text != str(message.text):
+        elif item is not None and not item.text.endswith(str(message.text)):
+            # Agent loops stream every model turn's text into one item, while
+            # the final message holds only the last turn's text.
             msg = "Streamed assistant text did not match the final assistant message."
             raise RuntimeError(msg)
 
@@ -384,8 +391,9 @@ class ResponsesEventBuilder:
                 content_index=0,
                 annotation_index=annotation_index,
                 # The event declares its own annotation classes; validate one
-                # from the output text annotation's wire mapping.
-                annotation=annotation.model_dump(mode="json"),
+                # from the output text annotation's wire mapping. Pydantic
+                # validates the dumped dict against the event's own union.
+                annotation=cast("Annotation", annotation.model_dump(mode="json")),
             )
         yield ResponseTextDoneEvent(
             type="response.output_text.done",

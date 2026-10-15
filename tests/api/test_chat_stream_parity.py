@@ -6,6 +6,11 @@ from langgraph.graph import StateGraph
 from openai import APIError, AsyncOpenAI
 
 from langgraph_openai_serve import GraphConfig, GraphRegistry, LanggraphOpenaiServe
+from tests.graph.support.agent_loop import (
+    FINAL_ANSWER,
+    FIRST_TURN_TEXT,
+    make_agent_loop_graph,
+)
 from tests.graph.support.schemas import MessageState
 
 
@@ -42,6 +47,10 @@ def deterministic_app() -> FastAPI:
             ),
             "mismatch": GraphConfig(
                 graph=mismatch_graph,
+                description="DUMMY",
+            ),
+            "agent-loop": GraphConfig(
+                graph=make_agent_loop_graph,
                 description="DUMMY",
             ),
         }
@@ -90,3 +99,22 @@ async def test_streaming_fails_when_text_differs_from_the_final_message(
     assert complete.choices[0].message.content == "durable text"
     assert streamed.message.content == "live text"
     assert streamed.finish_reason is None
+
+
+async def test_agent_loop_stream_finishes_with_the_final_turn(
+    openai_client: AsyncOpenAI,
+) -> None:
+    stream = await openai_client.chat.completions.create(
+        model="agent-loop",
+        messages=[{"role": "user", "content": "Hi"}],
+        stream=True,
+    )
+    chunks = [chunk async for chunk in stream]
+
+    # Every turn's text is a legal delta; the stream must still terminate.
+    streamed = "".join(chunk.choices[0].delta.content or "" for chunk in chunks)
+    assert streamed == FIRST_TURN_TEXT + FINAL_ANSWER
+    finish_reasons = [
+        chunk.choices[0].finish_reason for chunk in chunks if chunk.choices
+    ]
+    assert finish_reasons[-1] == "stop"
