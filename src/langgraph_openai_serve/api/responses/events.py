@@ -55,11 +55,11 @@ from langgraph_openai_serve.api.responses.output import (
     response_refusals,
     response_usage,
 )
-from langgraph_openai_serve.api.responses.schemas import ResponseCreateRequest
 from langgraph_openai_serve.api.responses.server_tools import (
     ServerToolItem,
     ServerToolTracker,
 )
+from langgraph_openai_serve.core.errors import GraphError
 from langgraph_openai_serve.graph.interrupt import LangGraphInterruptBatch
 
 _MessagePhase: TypeAlias = Literal["commentary", "final_answer"]
@@ -80,25 +80,11 @@ class _TextItem:
 class ResponsesEventBuilder:
     """Own stable state for one Responses event lifecycle."""
 
-    def __init__(
-        self,
-        request: ResponseCreateRequest,
-        *,
-        run_id: str | None = None,
-        response_id: str | None = None,
-        created_at: int | None = None,
-        server_tools: Collection[str] = (),
-    ) -> None:
-        self._context = ResponseContext.for_run(
-            request,
-            run_id=run_id,
-            response_id=response_id,
-            created_at=created_at,
-        )
+    def __init__(self, context: ResponseContext, server_tools: Collection[str]) -> None:
+        self._context = context
         self._sequence_number = 0
         self._output: list[ResponseOutputItem] = []
-        self.selected_server_tools = frozenset(server_tools)
-        self._server_tool_tracker = ServerToolTracker(self.selected_server_tools)
+        self._server_tool_tracker = ServerToolTracker(server_tools)
         self._final_item: _TextItem | None = None
 
     def created(self) -> ResponseCreatedEvent:
@@ -129,13 +115,7 @@ class ResponsesEventBuilder:
         yield from self._start_text_item(item)
         item.text_parts.append(text)
         yield self._text_delta(item, text)
-        part = ResponseOutputText(
-            annotations=[],
-            logprobs=[],
-            text=item.text,
-            type="output_text",
-        )
-        yield from self._finish_text_item(item, part)
+        yield from self._finish_text_item(item, _output_text(item.text))
 
     def final_delta(self, delta: str) -> Iterator[ResponseStreamEvent]:
         """
@@ -161,7 +141,11 @@ class ResponsesEventBuilder:
             Typed terminal events for a successful Response.
 
         """
-        calls, item_status, incomplete_details = self._completion(message)
+        calls = self._server_tool_tracker.client_function_calls(message)
+        incomplete_details = response_incomplete_details(message)
+        item_status: Literal["completed", "incomplete"] = (
+            "incomplete" if incomplete_details is not None else "completed"
+        )
         yield from self._finish_answer(message, status=item_status)
         for call in calls:
             yield from self._tool_item(call.model_copy(update={"status": item_status}))
@@ -182,18 +166,6 @@ class ResponsesEventBuilder:
                 sequence_number=self._sequence(),
                 response=response,
             )
-
-    def _completion(
-        self, message: AIMessage
-    ) -> tuple[
-        list[ResponseFunctionToolCall],
-        Literal["completed", "incomplete"],
-        IncompleteDetails | None,
-    ]:
-        calls = self._server_tool_tracker.client_function_calls(message)
-        incomplete_details = response_incomplete_details(message)
-        status = "incomplete" if incomplete_details is not None else "completed"
-        return calls, status, incomplete_details
 
     def _finish_answer(
         self, message: AIMessage, *, status: Literal["completed", "incomplete"]
@@ -216,7 +188,7 @@ class ResponsesEventBuilder:
             # Agent loops stream every model turn's text into one item, while
             # the final message holds only the last turn's text.
             msg = "Streamed assistant text did not match the final assistant message."
-            raise RuntimeError(msg)
+            raise GraphError(msg)
 
         if item is not None:
             yield from self._finish_text_item(
@@ -242,8 +214,7 @@ class ResponsesEventBuilder:
         self._server_tool_tracker.ensure_complete()
         if self._final_item is not None:
             yield from self._finish_text_item(
-                self._final_item,
-                response_output_text(AIMessage(content=self._final_item.text)),
+                self._final_item, _output_text(self._final_item.text)
             )
         for call in interrupt_output_items(batch):
             yield from self._tool_item(call)
@@ -261,8 +232,8 @@ class ResponsesEventBuilder:
             The error and failed Response events.
 
         """
-        # Keep the items already exposed to the client in the terminal snapshot.
-        # The SDK replaces its accumulated Response with response.failed.
+        # The terminal snapshot keeps the items already exposed to the client,
+        # with unfinished ones marked incomplete.
         item = self._final_item
         if (
             item is not None
@@ -271,9 +242,7 @@ class ResponsesEventBuilder:
         ):
             self._output[item.output_index] = self._output[
                 item.output_index
-            ].model_copy(
-                update={"content": [response_output_text(AIMessage(content=item.text))]}
-            )
+            ].model_copy(update={"content": [_output_text(item.text)]})
         self._output = [
             item.model_copy(update={"status": "incomplete"})
             if getattr(item, "status", None) == "in_progress"
@@ -329,12 +298,7 @@ class ResponsesEventBuilder:
             output_index=item.output_index,
             item_id=item.id,
             content_index=0,
-            part=ResponseOutputText(
-                annotations=[],
-                logprobs=[],
-                text="",
-                type="output_text",
-            ),
+            part=_output_text(""),
         )
 
     def _text_delta(self, item: _TextItem, delta: str) -> ResponseTextDeltaEvent:
@@ -481,11 +445,45 @@ class ResponsesEventBuilder:
             item=pending,
         )
         if isinstance(completed, ResponseFunctionToolCall):
-            yield from self._function_call_events(completed, output_index, item_id)
+            yield ResponseFunctionCallArgumentsDeltaEvent(
+                type="response.function_call_arguments.delta",
+                sequence_number=self._sequence(),
+                output_index=output_index,
+                item_id=item_id,
+                delta=completed.arguments,
+            )
+            yield ResponseFunctionCallArgumentsDoneEvent(
+                type="response.function_call_arguments.done",
+                sequence_number=self._sequence(),
+                output_index=output_index,
+                item_id=item_id,
+                arguments=completed.arguments,
+            )
         elif isinstance(completed, ResponseCustomToolCall):
-            yield from self._custom_tool_call_events(completed, output_index, item_id)
-        elif isinstance(completed, ResponseFunctionWebSearch):
-            yield from self._web_search_events(completed, output_index, item_id)
+            yield ResponseCustomToolCallInputDeltaEvent(
+                type="response.custom_tool_call_input.delta",
+                sequence_number=self._sequence(),
+                output_index=output_index,
+                item_id=item_id,
+                delta=completed.input,
+            )
+            yield ResponseCustomToolCallInputDoneEvent(
+                type="response.custom_tool_call_input.done",
+                sequence_number=self._sequence(),
+                output_index=output_index,
+                item_id=item_id,
+                input=completed.input,
+            )
+        elif (
+            isinstance(completed, ResponseFunctionWebSearch)
+            and completed.status == "completed"
+        ):
+            yield ResponseWebSearchCallCompletedEvent(
+                type="response.web_search_call.completed",
+                sequence_number=self._sequence(),
+                output_index=output_index,
+                item_id=item_id,
+            )
         self._output[output_index] = completed
         yield ResponseOutputItemDoneEvent(
             type="response.output_item.done",
@@ -493,62 +491,6 @@ class ResponsesEventBuilder:
             output_index=output_index,
             item=completed,
         )
-
-    def _function_call_events(
-        self,
-        completed: ResponseFunctionToolCall,
-        output_index: int,
-        item_id: str,
-    ) -> Iterator[ResponseStreamEvent]:
-        yield ResponseFunctionCallArgumentsDeltaEvent(
-            type="response.function_call_arguments.delta",
-            sequence_number=self._sequence(),
-            output_index=output_index,
-            item_id=item_id,
-            delta=completed.arguments,
-        )
-        yield ResponseFunctionCallArgumentsDoneEvent(
-            type="response.function_call_arguments.done",
-            sequence_number=self._sequence(),
-            output_index=output_index,
-            item_id=item_id,
-            arguments=completed.arguments,
-        )
-
-    def _custom_tool_call_events(
-        self,
-        completed: ResponseCustomToolCall,
-        output_index: int,
-        item_id: str,
-    ) -> Iterator[ResponseStreamEvent]:
-        yield ResponseCustomToolCallInputDeltaEvent(
-            type="response.custom_tool_call_input.delta",
-            sequence_number=self._sequence(),
-            output_index=output_index,
-            item_id=item_id,
-            delta=completed.input,
-        )
-        yield ResponseCustomToolCallInputDoneEvent(
-            type="response.custom_tool_call_input.done",
-            sequence_number=self._sequence(),
-            output_index=output_index,
-            item_id=item_id,
-            input=completed.input,
-        )
-
-    def _web_search_events(
-        self,
-        completed: ResponseFunctionWebSearch,
-        output_index: int,
-        item_id: str,
-    ) -> Iterator[ResponseStreamEvent]:
-        if completed.status == "completed":
-            yield ResponseWebSearchCallCompletedEvent(
-                type="response.web_search_call.completed",
-                sequence_number=self._sequence(),
-                output_index=output_index,
-                item_id=item_id,
-            )
 
     def server_tools(self, event: UpdatesStreamPart) -> Iterator[ResponseStreamEvent]:
         """
@@ -583,12 +525,13 @@ class ResponsesEventBuilder:
         return sequence_number
 
 
+def _output_text(text: str) -> ResponseOutputText:
+    """Plain output text, for text that carries no citations."""
+    return ResponseOutputText(
+        annotations=[], logprobs=[], text=text, type="output_text"
+    )
+
+
 def encode_event(event: ResponseStreamEvent) -> str:
     """Encode one Responses event using the official named SSE framing."""
     return f"event: {event.type}\ndata: {event.model_dump_json(by_alias=True)}\n\n"
-
-
-__all__ = [
-    "ResponsesEventBuilder",
-    "encode_event",
-]

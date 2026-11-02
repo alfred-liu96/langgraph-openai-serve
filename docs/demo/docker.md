@@ -10,7 +10,7 @@ The demo uses five independent uv projects rather than a uv workspace:
 | `demo/api-coding-agent` | `demo/api-coding-agent/uv.lock` | Local image build |
 | `demo/files_api` | `demo/files_api/uv.lock` | `ghcr.io/ilkersigirci/lgos-files-api` |
 | `demo/ui/chainlit_ui` | `demo/ui/chainlit_ui/uv.lock` | `ghcr.io/ilkersigirci/lgos-chainlit` |
-| `demo/ui/openwebui` | `demo/ui/openwebui/uv.lock` | Tests only; its source is mounted into the pinned `homeserver-open-webui` image |
+| `demo/ui/openwebui` | `demo/ui/openwebui/uv.lock` | Sync command and tests; the Functions are installed through Open WebUI's API |
 
 Published project-owned images use only their project directories as build
 contexts. The Compose entrypoint is `docker/compose/demo.yml`; service
@@ -20,18 +20,19 @@ OpenTelemetry, and SSO overlays.
 Shared runtime assets remain under `demo/docker/`. The development overlay
 additionally supplies the parent LGOS checkout as a named context for the demo API and coding-agent API
 editable installs. Open WebUI runs the pinned `homeserver-open-webui` image,
-the official slim image with small patches. Compose mounts the
-`lgos_openwebui` package into it read-only and starts its
-app factory, which installs the Functions at startup.
+the official slim image with small patches, unchanged;
+`just demo/sync-openwebui` installs the LGOS Functions through its API.
 The two gateway fragments use pinned public images: upstream
 Bifrost and `homeserver-litellm`. There is no demo-wide `pyproject.toml`, uv
 workspace, shared Python environment, or shared lockfile.
-The API package includes the compact Markdown corpus used by `lgos-rag`.
+`lgos-rag` downloads the Markdown docs of the installed LGOS release from its
+GitHub source archive, so the API container needs outbound HTTPS access to
+GitHub.
 
 ## Compose Modes
 
 Commands use Bash and Just 1.58.0 or newer and run from the repository root.
-In a standalone copy of `demo/`, use `just <recipe>` in place of
+The Open WebUI sync also needs uv. In a standalone copy of `demo/`, use `just <recipe>` in place of
 `just demo/<recipe>`.
 
 !!! note "Docker Compose 5.3.0 or newer"
@@ -67,7 +68,8 @@ settings](reference.md#opentelemetry-settings).
 
     The command starts the gateway first, then the LGOS services, including
     Chainlit and DBHub, which assume it is running. It syncs metadata into the
-    selected gateway, then starts Open WebUI. Services remain running in the
+    selected gateway, then starts Open WebUI and syncs its Functions through the
+    API. Services remain running in the
     background. Compose owns [dependency order and
     readiness](https://docs.docker.com/compose/how-tos/startup-order/); `just` only
     sequences the repeatable sync jobs.
@@ -80,7 +82,7 @@ settings](reference.md#opentelemetry-settings).
 
     Apply the explicit development model from the LGOS repository checkout.
     The demo API, coding-agent API, Files API, and Chainlit services build locally from their
-    Dockerfiles and lockfiles; Open WebUI remains the pinned upstream image.
+    Dockerfiles and lockfiles; Open WebUI remains the pinned patched image.
     Both graph API images install the parent LGOS
     checkout as an editable package:
 
@@ -94,7 +96,8 @@ settings](reference.md#opentelemetry-settings).
     The development overlay bind-mounts the Python application sources and the
     parent LGOS package read-only. Restart or recreate the affected service
     after source edits. Dependency metadata and lockfile changes require an
-    image rebuild.
+    image rebuild. Apply Open WebUI Function edits with
+    `just demo/sync-openwebui`.
 
     ??? tip "Develop with the local Chainlit utilities"
 
@@ -136,6 +139,10 @@ command to switch the stack to OIDC:
 ```bash
 just demo/compose --sso
 ```
+
+With password sign-in off, the Open WebUI sync needs an SSO admin's API key
+in `DEMO_OPENWEBUI_SYNC_API_KEY`; see
+[Gateway Credentials](open-webui.md#gateway-credentials) for the first run.
 
 The `docker/compose/sso.yml` overlay reads the SSO section of `demo/.env` and:
 
@@ -290,13 +297,13 @@ UI's settings.
     API, worker, and coding-agent containers, which call their models through
     it. Set `DEMO_API_OPENAI_CHAT_COMPLETIONS_MODEL`,
     `DEMO_API_OPENAI_RESPONSES_MODEL`, `DEMO_API_OPENAI_EMBEDDING_MODEL`, and the
-    `DEMO_AUDIO_*` models to IDs that gateway registers. The advanced graph's
-    vector store also needs that gateway's `/openai_passthrough` route. On another host,
+    `DEMO_AUDIO_*` models to IDs that gateway registers. On another host,
     expose DBHub only on a private address reachable by that gateway.
 
     `just demo/compose` (or the same command with `--dev`) starts
     the demo APIs, Files service, Chainlit, and DBHub, syncs both
-    catalogs to the external LiteLLM, then starts Open WebUI. An empty
+    catalogs to the external LiteLLM, then starts Open WebUI and syncs its
+    Functions. An empty
     `COMPOSE_PROFILES` disables both bundled gateways;
     the template normally selects one through
     `COMPOSE_PROFILES=${OPENAI_GATEWAY_TYPE}`. The external gateway and its
@@ -452,13 +459,14 @@ UI's settings.
 
     ```bash
     just demo/up lgos-openwebui --wait
+    just demo/sync-openwebui
     ```
 
     Open WebUI: `http://localhost:3003`
 
-    Compose runs the pinned `homeserver-open-webui` image. Its startup
-    installs the bundled Functions, and its model list reads each graph's
-    description and settings from the gateway; see the
+    Compose runs the pinned `homeserver-open-webui` image. The sync installs
+    the bundled Functions through its API, and Open WebUI's model list reads
+    each graph's description and settings from the gateway; see the
     [Open WebUI setup](open-webui.md#setup). The image keeps chat uploads raw,
     as described under [Open WebUI file input](open-webui.md#file-input).
 

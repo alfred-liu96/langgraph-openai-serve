@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import (
     AliasPath,
@@ -14,8 +14,8 @@ from pydantic import (
     field_validator,
 )
 
-# These values mirror the public LGOS wire contract. This standalone Open WebUI
-# Function must not import the server package:
+# The LGOS values here mirror the public LGOS wire contract. This standalone
+# Open WebUI Function must not import the server package:
 # https://github.com/ilkersigirci/langgraph-openai-serve/blob/main/src/langgraph_openai_serve/protocol.py
 # https://github.com/ilkersigirci/langgraph-openai-serve/blob/main/src/langgraph_openai_serve/api/models/schemas.py
 # https://github.com/ilkersigirci/langgraph-openai-serve/blob/main/src/langgraph_openai_serve/api/responses/interrupts.py
@@ -39,8 +39,6 @@ OPENAI_METADATA_VALUE_MAX_LENGTH = 512
 CONVERSATION_METADATA_KEY = "conversation_id"
 SETTINGS_METADATA_KEY = "lgos_settings"
 LGOS_MODEL_OWNER = "langgraph-openai-serve"
-# Both gateways publish every LGOS model under this public namespace.
-LGOS_MODEL_NAMESPACE = "lgos/"
 # OpenAI's built-in tool; every other advertised server tool is a custom tool.
 WEB_SEARCH_TOOL_NAME = "web_search"
 BACKGROUND_SETTING_NAME = "lgos_background"
@@ -70,13 +68,13 @@ class OpenWebUIFile(BaseModel):
 
 
 class OpenWebUIMessageFunction(BaseModel):
-    name: str | None = None
-    arguments: str | None = None
+    name: str
+    arguments: str
 
 
 class OpenWebUIMessageToolCall(BaseModel):
-    id: str | None = None
-    function: OpenWebUIMessageFunction | None = None
+    id: str
+    function: OpenWebUIMessageFunction
 
 
 class OpenWebUIMessage(BaseModel):
@@ -165,12 +163,49 @@ class OpenWebUIMetadata(BaseModel):
 
 class OpenWebUIToolSpec(BaseModel):
     description: str | None = None
-    parameters: dict[str, JsonValue] | None = None
-    strict: bool = False
+    parameters: dict[str, JsonValue]
 
 
 class InterruptCancelled(Exception):  # ruff: ignore[error-suffix-on-exception-name] - Cancellation is control flow, not an application error.
     """The user cancelled Open WebUI's native interrupt prompt."""
+
+
+class AskUserOption(BaseModel):
+    label: str
+
+
+class AskUserQuestion(BaseModel):
+    """One question of a stored ask_user call, as its card showed it."""
+
+    id: str
+    question: str
+    options: list[AskUserOption]
+    allow_other: bool = False
+
+
+class AskUserRequest(BaseModel):
+    """The ask_user call arguments Open WebUI stores with the chat."""
+
+    questions: list[AskUserQuestion]
+
+
+class AskUserAnswer(BaseModel):
+    """One browser answer: the chosen option's label or free-form text."""
+
+    type: Literal["option", "other"]
+    label: str = ""
+    text: str = ""
+
+    def output(self) -> str:
+        """Return the interrupt output this answer resumes the graph with."""
+        return self.label if self.type == "option" else self.text.strip()
+
+
+class AskUserResult(BaseModel):
+    """The tool result Open WebUI stores when the user answers the card."""
+
+    status: Literal["answered", "cancelled"]
+    answers: dict[str, AskUserAnswer] = Field(default_factory=dict)
 
 
 class DisplayFileArguments(BaseModel):

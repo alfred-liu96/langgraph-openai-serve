@@ -2,10 +2,18 @@
 
 import json
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Annotated, Any
 
 from openai.types.responses import ResponseFunctionToolCall
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 
 from .contracts import (
     ASK_USER_CALL_ID_PREFIX,
@@ -15,38 +23,45 @@ from .contracts import (
     ASK_USER_QUESTION_MAX_LENGTH,
     ASK_USER_REJECTED_OUTPUT,
     ASK_USER_TOOL_NAME,
+    AskUserResult,
     InterruptCancelled,
     OpenWebUIMessage,
 )
 from .responses import _openwebui_chunk
 
-
-class AskUserAnswer(BaseModel):
-    """One browser answer: the chosen option's label or free-form text."""
-
-    type: Literal["option", "other"]
-    label: str = ""
-    text: str = ""
-
-
-class AskUserResult(BaseModel):
-    """The tool result Open WebUI stores when the user answers the card."""
-
-    status: Literal["answered", "cancelled"]
-    answers: dict[str, AskUserAnswer] = Field(default_factory=dict)
-
-
 ASK_USER_MIN_CHOICES = 2
 ASK_USER_MAX_CHOICES = 3
+
+
+class _InterruptPayload(BaseModel):
+    """The interrupt arguments Open WebUI's native ask-user card can represent."""
+
+    model_config = ConfigDict(strict=True)
+
+    question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    choices: list[str] = Field(
+        min_length=ASK_USER_MIN_CHOICES,
+        max_length=ASK_USER_MAX_CHOICES,
+    )
+    allow_other: bool = False
+
+    @field_validator("choices")
+    @classmethod
+    def valid_choices(cls, choices: list[str]) -> list[str]:
+        # Answers carry the option label, which Open WebUI strips and truncates.
+        if len(set(choices)) != len(choices) or any(
+            not choice or choice.strip()[:ASK_USER_LABEL_MAX_LENGTH] != choice
+            for choice in choices
+        ):
+            msg = "Choices must be unique labels that Open WebUI keeps unchanged."
+            raise ValueError(msg)
+        return choices
 
 
 def _ask_user_to_resume(
     messages: Sequence[OpenWebUIMessage],
 ) -> tuple[list[dict[str, str]], str] | None:
     """Restore a Responses continuation from Open WebUI's persisted answer."""
-    if not messages:
-        return None
-
     assistant_index = len(messages) - 1
     while assistant_index >= 0 and messages[assistant_index].role == "tool":
         assistant_index -= 1
@@ -57,21 +72,15 @@ def _ask_user_to_resume(
         return None
 
     tool_calls = assistant.tool_calls
-    if not any(
-        call.id is not None and call.id.startswith(ASK_USER_CALL_ID_PREFIX)
-        for call in tool_calls
-    ):
+    if not any(call.id.startswith(ASK_USER_CALL_ID_PREFIX) for call in tool_calls):
         return None
     # An incomplete exchange must fail rather than start a new graph run.
-    function = tool_calls[0].function
-    card_id = tool_calls[0].id
+    card = tool_calls[0]
     if (
-        len(tool_calls) != 1  # ruff: ignore[too-many-boolean-expressions] - Validate the complete interrupt exchange before resuming any work.
+        len(tool_calls) != 1
         or assistant_index != len(messages) - 2
-        or function is None
-        or function.name != ASK_USER_TOOL_NAME
-        or card_id is None
-        or messages[-1].tool_call_id != card_id
+        or card.function.name != ASK_USER_TOOL_NAME
+        or messages[-1].tool_call_id != card.id
     ):
         msg = "Open WebUI returned an incomplete interrupt batch."
         raise ValueError(msg)
@@ -82,11 +91,11 @@ def _ask_user_to_resume(
         {
             "type": "function_call_output",
             "call_id": call_id,
-            "output": answer.label if answer.type == "option" else answer.text.strip(),
+            "output": answer.output(),
         }
         for call_id, answer in result.answers.items()
     ]
-    return outputs, card_id.removeprefix(ASK_USER_CALL_ID_PREFIX)
+    return outputs, card.id.removeprefix(ASK_USER_CALL_ID_PREFIX)
 
 
 def _ask_user_result(content: JsonValue) -> AskUserResult:
@@ -109,8 +118,8 @@ def _ask_user_card(
     """
     Present one LGOS interrupt batch as one native question card.
 
-    Returns the ``ask_user`` call and the complete text of questions too long
-    for the card, to show above it.
+    Returns the ``ask_user`` call and the question details the card cannot
+    show, to show above it.
     """
     if len(calls) > ASK_USER_MAX_QUESTIONS:
         msg = f"Open WebUI asks at most {ASK_USER_MAX_QUESTIONS} questions at once."
@@ -123,38 +132,43 @@ def _ask_user_card(
         if review:
             reviews.append(review)
     ask_user = {
-        # Open WebUI keeps this ID with the answer, keyed by question ID.
+        # The call ID carries the paused Response ID, which
+        # _ask_user_to_resume reads back from the stored answer.
         "id": f"{ASK_USER_CALL_ID_PREFIX}{response_id}",
         "type": "function",
         "function": {
             "name": ASK_USER_TOOL_NAME,
             "arguments": json.dumps(
-                {
-                    "questions": questions,
-                    "allow_other": any(
-                        question["allow_other"] for question in questions
-                    ),
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
+                {"questions": questions}, ensure_ascii=False, separators=(",", ":")
             ),
         },
     }
     return ask_user, "\n\n".join(reviews)
 
 
-def _openwebui_interrupt_chunk(
+def _openwebui_interrupt_chunks(
     model_id: str,
     response_id: str,
     calls: list[ResponseFunctionToolCall],
     *,
     after_text: bool = False,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     ask_user, review = _ask_user_card(response_id, calls)
-    delta: dict[str, Any] = {"tool_calls": [{"index": 0, **ask_user}]}
+    chunks = []
     if review:
-        delta["content"] = f"\n\n{review}" if after_text else review
-    return _openwebui_chunk(model_id, delta, finish_reason="tool_calls")
+        # Like a model, stream the text before the call: Open WebUI places a
+        # chunk's tool call ahead of its text, which would put the card above
+        # the details it asks about.
+        content = f"\n\n{review}" if after_text else review
+        chunks.append(_openwebui_chunk(model_id, {"content": content}))
+    chunks.append(
+        _openwebui_chunk(
+            model_id,
+            {"tool_calls": [{"index": 0, **ask_user}]},
+            finish_reason="tool_calls",
+        )
+    )
+    return chunks
 
 
 def _openwebui_interrupt_completion(
@@ -208,65 +222,34 @@ def _openwebui_interrupt_completion(
 
 
 def _interrupt_question(call: ResponseFunctionToolCall) -> tuple[dict[str, Any], str]:
-    try:
-        payload = json.loads(call.arguments)
-    except ValueError as exc:
-        msg = "LangGraph API returned invalid interrupt tool arguments."
-        raise ValueError(msg) from exc
-    if not isinstance(payload, dict):
-        msg = "Open WebUI requires an object interrupt payload."
-        raise ValueError(msg)  # ruff: ignore[type-check-without-type-error] - Malformed decoded payloads use the existing ValueError validation contract.
-    question = payload.get("question")
-    choices = payload.get("choices")
-    allow_other = payload.get("allow_other", False)
-    if not isinstance(question, str) or not question.strip():
-        msg = "Open WebUI interrupt payload requires a question."
-        raise ValueError(msg)
-    # Answers carry the option label, which Open WebUI strips and truncates.
-    if (
-        not isinstance(choices, list)
-        or not ASK_USER_MIN_CHOICES <= len(choices) <= ASK_USER_MAX_CHOICES
-        or any(
-            not isinstance(choice, str)
-            or not choice
-            or choice.strip()[:ASK_USER_LABEL_MAX_LENGTH] != choice
-            for choice in choices
-        )
-        or len(set(choices)) != len(choices)
-        or not isinstance(allow_other, bool)
-    ):
-        msg = (
-            "Open WebUI interrupts require "
-            f"{ASK_USER_MIN_CHOICES}-{ASK_USER_MAX_CHOICES} unique choices of at "
-            f"most {ASK_USER_LABEL_MAX_LENGTH} characters without surrounding spaces."
-        )
-        raise ValueError(msg)
     # Answers are keyed by question ID, which Open WebUI truncates.
     if len(call.call_id) > ASK_USER_QUESTION_ID_MAX_LENGTH:
         msg = "LangGraph API returned an interrupt call ID Open WebUI cannot keep."
         raise ValueError(msg)
+    try:
+        payload = _InterruptPayload.model_validate_json(call.arguments)
+    except ValidationError as exc:
+        msg = (
+            "Open WebUI interrupts require a question and "
+            f"{ASK_USER_MIN_CHOICES}-{ASK_USER_MAX_CHOICES} unique choices of at "
+            f"most {ASK_USER_LABEL_MAX_LENGTH} characters without surrounding spaces."
+        )
+        raise ValueError(msg) from exc
 
-    question = question.strip()
-    details = {
-        key: value
-        for key, value in payload.items()
-        if key not in {"question", "choices", "allow_other"}
-    }
-    encoded = json.dumps(details, ensure_ascii=False, indent=2)
-    prompt = f"{question}\n\n{encoded}" if details else question
-    review = ""
-    if len(prompt) > ASK_USER_QUESTION_MAX_LENGTH:
-        # Open WebUI truncates the card text; keep the complete review visible.
-        review = f"{question}\n\n```json\n{encoded}\n```" if details else question
-        # The hint comes first so the card's truncation cannot cut it.
-        prompt = f"Review the full request above before choosing.\n\n{question}"
+    # The question is the whole prompt; other payload fields are for programs.
+    # Open WebUI's card shows one plain-text line and truncates it, so, as a
+    # model would, the card asks the question's first paragraph and the
+    # details go above it as Markdown text.
+    ask, _, review = payload.question.partition("\n\n")
+    if "\n" in ask or len(ask) > ASK_USER_QUESTION_MAX_LENGTH:
+        ask, review = "Review the request above before choosing.", payload.question
     return {
         "id": call.call_id,
         "header": "Human input",
-        "question": prompt,
+        "question": ask,
         "options": [
             {"label": choice, "description": f"Resume with {choice!r}."}
-            for choice in choices
+            for choice in payload.choices
         ],
-        "allow_other": allow_other,
+        "allow_other": payload.allow_other,
     }, review

@@ -23,7 +23,7 @@ from langgraph_openai_serve import (
 from pydantic import BaseModel
 
 from lgos_demo_api.core.settings import settings
-from lgos_demo_api.utils.citations import cite_markdown_links
+from lgos_demo_api.utils.citations import cite_sources, tool_sources
 from lgos_demo_api.utils.models import responses_model
 from lgos_demo_api.utils.web_search import search_web
 
@@ -118,22 +118,6 @@ def _selected_tools(request: GraphRequest) -> list[BaseTool]:
     return [_SERVER_TOOLS[name] for name in request.server_tools]
 
 
-def _search_sources(state: ServerToolState) -> dict[str, str]:
-    """Collect source metadata retained by completed search tools."""
-    sources: dict[str, str] = {}
-    for message in state.messages:
-        if not isinstance(message, ToolMessage) or message.name != web_search.name:
-            continue
-        if not isinstance(message.artifact, dict):
-            continue
-        sources.update(
-            (url, title)
-            for url, title in message.artifact.items()
-            if isinstance(url, str) and isinstance(title, str)
-        )
-    return sources
-
-
 def create_server_tool_graph() -> CompiledStateGraph[
     ServerToolState, GraphRequest, ServerToolState, ServerToolState
 ]:
@@ -162,11 +146,7 @@ def create_server_tool_graph() -> CompiledStateGraph[
         response = await internal_model.bind_tools(
             _selected_tools(request),
             tool_choice=choice,
-            **(
-                {"parallel_tool_calls": request.parallel_tool_calls}
-                if request.parallel_tool_calls is not None
-                else {}
-            ),
+            parallel_tool_calls=request.parallel_tool_calls,
         ).ainvoke(
             [
                 SystemMessage(
@@ -193,7 +173,11 @@ def create_server_tool_graph() -> CompiledStateGraph[
                 *state.messages,
             ]
         )
-        return {"messages": [cite_markdown_links(response, _search_sources(state))]}
+        return {
+            "messages": [
+                cite_sources(response, tool_sources(state.messages, web_search.name))
+            ]
+        }
 
     workflow = StateGraph(ServerToolState, context_schema=GraphRequest)
     workflow.add_node("select_tools", select_tools)
@@ -220,12 +204,3 @@ server_tool_graph_config = GraphConfig(
     server_tools={package_version.name, web_search.name},
     context_factory=context_factory,
 )
-
-
-__all__ = [
-    "create_server_tool_graph",
-    "package_version",
-    "server_tool_graph",
-    "server_tool_graph_config",
-    "web_search",
-]

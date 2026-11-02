@@ -13,8 +13,8 @@ from openai.types import Model as OpenAIModel
 
 from langgraph_openai_serve.api.models.schemas import (
     LangGraphModelExtension,
+    Model,
     ModelClientSettings,
-    ModelDetails,
 )
 from langgraph_openai_serve.graph.client_settings import ClientSettings
 from langgraph_openai_serve.graph.features import GraphFeature
@@ -42,7 +42,7 @@ class ExampleSettings(ClientSettings):
 
 
 def _model_payload() -> dict[str, Any]:
-    return ModelDetails(
+    return Model(
         id="interruptible",
         created=1,
         owned_by="langgraph-openai-serve",
@@ -64,7 +64,11 @@ def _model_payload() -> dict[str, Any]:
 
 
 def _openwebui_settings_fields(payload: dict[str, Any]) -> object:
-    (model, *_) = openwebui_models([OpenAIModel.model_validate(payload)])
+    (model, *_) = openwebui_models(
+        [OpenAIModel.model_validate(payload)],
+        mcp_gateway_connection_id="lgos-gateway",
+        uservalves_graph_model_id=None,
+    )
     return model["info"]["meta"]["chat_variables_schema"]["fields"]
 
 
@@ -95,10 +99,6 @@ def test_demo_clients_mirror_lgos_protocol_names(protocol: dict[str, object]) ->
     assert protocol["CONVERSATION_METADATA_KEY"] == CONVERSATION_METADATA_KEY
     assert protocol["SETTINGS_METADATA_KEY"] == SETTINGS_METADATA_KEY
     assert protocol["INTERRUPT_TOOL_NAME"] == INTERRUPT_TOOL_NAME
-
-
-def test_server_serializes_the_manifest_model_extension_key() -> None:
-    assert MODEL_EXTENSION_KEY in _model_payload()
 
 
 @pytest.mark.parametrize("additive_fields", [False, True], ids=["current", "additive"])

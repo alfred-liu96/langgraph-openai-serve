@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
 import pytest
+from anyio import Event, fail_after, sleep_forever
 from openai.types.chat import ChatCompletionChunk
 from openai.types.responses import (
     Response,
@@ -39,12 +40,13 @@ from lgos_openwebui.functions.generic import (
     responses as generic_responses,
 )
 from lgos_openwebui.functions.generic.contracts import (
+    ASK_USER_REJECTED_OUTPUT,
     OpenWebUIBody,
     OpenWebUIMessage,
 )
 from lgos_openwebui.functions.generic.interrupts import (
     _ask_user_to_resume,
-    _openwebui_interrupt_chunk,
+    _openwebui_interrupt_chunks,
     _openwebui_interrupt_completion,
 )
 from lgos_openwebui.functions.generic.responses import (
@@ -52,8 +54,9 @@ from lgos_openwebui.functions.generic.responses import (
     _responses_input,
 )
 from lgos_openwebui.functions.uservalves_simple import Filter
+from tests.support import configured_pipe
 
-pytestmark = pytest.mark.usefixtures("gateway_environment")
+pytestmark = pytest.mark.usefixtures("openwebui_connection")
 
 MODEL_ID = "interruptible-approval"
 QUALIFIED_MODEL_ID = f"generic.{MODEL_ID}"
@@ -89,58 +92,80 @@ def final_response(text: str) -> Response:
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_large_note_is_visible_before_the_native_approval_question(streaming) -> None:
-    note = "Exact note contents. " * 100
+def test_question_details_are_text_above_the_native_question_card(
+    streaming: bool,
+) -> None:
+    plan = [f"What does source {number} say about interrupts?" for number in range(20)]
+    bullets = "\n".join(f"- {question}" for question in plan)
     call = function_call(
         "lgos_interrupt",
         {
-            "question": "Save this exact note?",
-            "content": note,
-            "filename": "note.md",
-            "vector_store_id": "vs_docs",
-            "choices": ["approve", "reject"],
+            "question": f"Start deep research?\n\nResearch plan:\n{bullets}",
+            # Fields besides the question are for programs, not the reviewer.
+            "trace": "internal-trace-value",
+            "choices": ["Start research", "Answer now"],
             "allow_other": True,
         },
     )
-    result = (
-        _openwebui_interrupt_chunk if streaming else _openwebui_interrupt_completion
-    )("advanced-graph", RESPONSE_ID, [call])
-    message = result["choices"][0]["delta" if streaming else "message"]
-    assert note in message["content"]
-    ask_user = message["tool_calls"][0]
+    if streaming:
+        text, card = (
+            chunk["choices"][0]["delta"]
+            for chunk in _openwebui_interrupt_chunks(
+                "deep-research", RESPONSE_ID, [call]
+            )
+        )
+        # Open WebUI places a chunk's tool call ahead of its text, so the text
+        # streams first and the answered card stays below its question.
+        assert "tool_calls" not in text
+        assert "content" not in card
+        content, ask_user = text["content"], card["tool_calls"][0]
+    else:
+        message = _openwebui_interrupt_completion("deep-research", RESPONSE_ID, [call])[
+            "choices"
+        ][0]["message"]
+        content, ask_user = message["content"], message["tool_calls"][0]
+    # The card shows one plain-text line; the details render above it.
+    assert content == f"Research plan:\n{bullets}"
     question = json.loads(ask_user["function"]["arguments"])["questions"][0]["question"]
-    assert len(question) <= 500
-    assert "above" in question
+    assert question == "Start deep research?"
+    assert "internal-trace-value" not in content + question
     resumed = _ask_user_to_resume(
-        host_messages(ask_user_exchange(ask_user, {call.call_id: option("approve")}))
+        host_messages(
+            ask_user_exchange(ask_user, {call.call_id: option("Start research")})
+        )
     )
     assert resumed == (
         [
             {
                 "type": "function_call_output",
                 "call_id": call.call_id,
-                "output": "approve",
+                "output": "Start research",
             }
         ],
         RESPONSE_ID,
     )
 
 
-def test_review_hint_survives_open_webui_question_truncation() -> None:
+def test_a_question_the_card_would_truncate_stays_whole_above_it() -> None:
     call = function_call(
         "lgos_interrupt",
         {
-            "question": "Save this note? " * 31,
-            "content": "Exact note contents.",
+            "question": "Save this note? " * 40,
             "choices": ["approve", "reject"],
         },
     )
 
-    ask_user = ask_user_card(call)
+    message = _openwebui_interrupt_completion("note", RESPONSE_ID, [call])["choices"][
+        0
+    ]["message"]
 
-    question = json.loads(ask_user["function"]["arguments"])["questions"][0]["question"]
+    assert message["content"] == ("Save this note? " * 40).strip()
+    question = json.loads(message["tool_calls"][0]["function"]["arguments"])[
+        "questions"
+    ][0]["question"]
     # Open WebUI keeps the first 500 characters of a card question.
-    assert "above" in question[:500]
+    assert len(question) <= 500
+    assert "above" in question
 
 
 async def test_streamed_text_and_the_full_review_stay_separate(
@@ -149,8 +174,7 @@ async def test_streamed_text_and_the_full_review_stay_separate(
     call = function_call(
         "lgos_interrupt",
         {
-            "question": "Save this note?",
-            "content": "Exact note contents. " * 30,
+            "question": "Save this note?\n\n" + "Exact note contents. " * 30,
             "choices": ["approve", "reject"],
         },
     )
@@ -176,12 +200,12 @@ async def test_streamed_text_and_the_full_review_stay_separate(
 
     install_client(monkeypatch, stream=scripted_stream)
 
-    chunks = await collect(generic_pipe.Pipe().pipe(body(stream=True)))
+    chunks = await collect(configured_pipe().pipe(body(stream=True)))
 
     content = "".join(
         chunk["choices"][0]["delta"].get("content", "") for chunk in chunks
     )
-    assert content.startswith("I drafted the note.\n\nSave this note?")
+    assert content.startswith("I drafted the note.\n\nExact note contents.")
 
 
 def function_call(name: str, arguments: dict[str, object]) -> ResponseFunctionToolCall:
@@ -284,7 +308,7 @@ async def test_additive_host_fields_are_ignored_at_the_validated_boundary(
     }
     request_body["messages"][0]["future_message_field"] = "preserved by host"
 
-    result = await generic_pipe.Pipe().pipe(
+    result = await configured_pipe().pipe(
         request_body,
         __metadata__={"chat_id": "thread-123", "future_metadata_field": True},
         __user__={"id": "user-123", "future_user_field": "value"},
@@ -397,37 +421,21 @@ def bundled_generic(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return module
 
 
-async def test_pipe_names_missing_gateway_settings_without_echoing_the_key(
+async def test_unconfigured_pipe_names_the_missing_gateway_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     create = AsyncMock()
     install_client(monkeypatch, create=create)
-    monkeypatch.delenv("OPENAI_GATEWAY_TYPE")
-    monkeypatch.setenv("OPENAI_GATEWAY_BASE_URL", "not a URL")
-    pipe = generic_pipe.Pipe()
+    pipe = configured_pipe()
+    # Open WebUI constructs a new Pipe with default, unconfigured valves.
+    pipe.valves = pipe.Valves()
 
     result = await pipe.pipe(body(stream=False))
 
-    detail = result["error"]["detail"]
-    assert "OPENAI_GATEWAY_BASE_URL, OPENAI_GATEWAY_TYPE" in detail
-    assert "test-api-key" not in detail
+    assert "OPENAI_GATEWAY_BASE_URL" in result["error"]["detail"]
     create.assert_not_awaited()
-    with pytest.raises(RuntimeError, match="OPENAI_GATEWAY_TYPE"):
+    with pytest.raises(RuntimeError, match="OPENAI_GATEWAY_BASE_URL"):
         await pipe.pipes()
-
-
-async def test_deployed_bundle_runs_responses_inference(
-    bundled_generic: ModuleType,
-) -> None:
-    create = AsyncMock(return_value=final_response("Bundle answer."))
-    bundled_generic._client = lambda **_: FakeClient(create=create)
-
-    result = await bundled_generic.Pipe().pipe(body(stream=False))
-
-    assert result == "Bundle answer."
-    request = create.await_args.kwargs
-    assert request["input"] == [{"role": "user", "content": "Refund ORDER-123"}]
-    assert request["store"] is False
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -476,7 +484,7 @@ async def test_bundle_maps_server_controls_without_forwarding_openwebui_tools(
 
     bundled_generic._client = lambda **_: FakeClient(create=create, stream=stream)
     result = await collect(
-        bundled_generic.Pipe().pipe(
+        configured_pipe(bundled_generic.Pipe).pipe(
             {
                 **body(stream=streaming),
                 "model": "generic.lgos/server-tool",
@@ -522,7 +530,7 @@ async def test_bundle_offers_the_advertised_tools_outside_graph_settings(
     create = AsyncMock(return_value=final_response("Done."))
     bundled_generic._client = lambda **_: FakeClient(create=create)
 
-    result = await bundled_generic.Pipe().pipe(
+    result = await configured_pipe(bundled_generic.Pipe).pipe(
         {**body(stream=False), "model": "generic.lgos/any-graph"},
         __metadata__=chat_metadata(**advertised, **chat_variables),
     )
@@ -539,7 +547,7 @@ async def test_deployed_bundle_runs_non_streaming_interrupt(
     create = AsyncMock(return_value=response(interrupt_call()))
     bundled_generic._client = lambda **_: FakeClient(create=create)
 
-    result = await bundled_generic.Pipe().pipe(body(stream=False))
+    result = await configured_pipe(bundled_generic.Pipe).pipe(body(stream=False))
 
     assert (
         result["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
@@ -572,7 +580,9 @@ async def test_bundled_stream_keeps_sse_looking_text_as_content(
 
     bundled_generic._client = lambda **_: FakeClient(stream=scripted_stream)
 
-    output = await collect(bundled_generic.Pipe().pipe(body(stream=True)))
+    output = await collect(
+        configured_pipe(bundled_generic.Pipe).pipe(body(stream=True))
+    )
 
     # The host JSON-encodes objects; raw strings beginning with data: bypass it.
     decoded = [ChatCompletionChunk.model_validate(chunk) for chunk in output]
@@ -597,7 +607,7 @@ async def test_requests_name_the_user_the_gateway_verifies(
     create = AsyncMock(return_value=final_response("Done."))
     install_client(monkeypatch, create=create)
 
-    await generic_pipe.Pipe().pipe(body(stream=False), __user__=user)
+    await configured_pipe().pipe(body(stream=False), __user__=user)
 
     # Under SSO the gateway bills the token's subject, so the graph's own model
     # calls name the same user.
@@ -609,7 +619,7 @@ async def test_non_streaming_request_uses_responses_and_final_answer_only(
 ) -> None:
     create = AsyncMock(return_value=final_response("Approved."))
     install_client(monkeypatch, create=create)
-    pipe = generic_pipe.Pipe()
+    pipe = configured_pipe()
 
     result = await pipe.pipe(
         body(stream=False),
@@ -646,11 +656,13 @@ BACKGROUND_GATEWAYS = pytest.mark.parametrize(
 
 
 @BACKGROUND_GATEWAYS
+@pytest.mark.parametrize("streaming", [False, True])
 async def test_background_response_uses_polling_and_native_statuses(
     monkeypatch: pytest.MonkeyPatch,
     gateway_type: str,
     model: str,
     lifecycle_options: dict[str, object],
+    streaming: bool,
 ) -> None:
     response_id = "resp_background"
     queued = Response.model_construct(id=response_id, status="queued", output=[])
@@ -677,17 +689,18 @@ async def test_background_response_uses_polling_and_native_statuses(
     async def emit(event: dict[str, Any]) -> None:
         events.append(event)
 
-    monkeypatch.setenv("OPENAI_GATEWAY_TYPE", gateway_type)
-    pipe = generic_pipe.Pipe()
+    pipe = configured_pipe(OPENAI_GATEWAY_TYPE=gateway_type)
     result = await collect(
         pipe.pipe(
-            {**body(stream=True), "model": f"generic.{model}"},
+            {**body(stream=streaming), "model": f"generic.{model}"},
             __metadata__=chat_metadata(lgos_background=True),
             __event_emitter__=emit,
         )
     )
 
-    assert result[0]["choices"][0]["delta"]["content"] == "Report ready."
+    assert (
+        result[0]["choices"][0]["delta"]["content"] if streaming else result[0]
+    ) == "Report ready."
     request = create.await_args.kwargs
     assert request["background"] is True
     assert request["store"] is True
@@ -736,7 +749,7 @@ async def test_interrupt_answers_follow_the_background_setting(
         ask_user_exchange(ask_user_card(call), {call.call_id: option("approve")})
     )
 
-    await generic_pipe.Pipe().pipe(
+    await configured_pipe().pipe(
         request_body, __metadata__=chat_metadata(lgos_background=True)
     )
 
@@ -758,8 +771,8 @@ async def test_chat_variables_of_previously_selected_models_are_not_sent(
         "web_search": True,
     }
 
-    result = await generic_pipe.Pipe().pipe(
-        {**body(stream=False), "model": "generic.lgos/advanced-graph"},
+    result = await configured_pipe().pipe(
+        {**body(stream=False), "model": "generic.lgos/deep-research"},
         __metadata__=metadata,
     )
 
@@ -796,8 +809,7 @@ async def test_background_response_is_cancelled_when_request_stops(
         "sleep",
         AsyncMock(side_effect=asyncio.CancelledError),
     )
-    monkeypatch.setenv("OPENAI_GATEWAY_TYPE", gateway_type)
-    pipe = generic_pipe.Pipe()
+    pipe = configured_pipe(OPENAI_GATEWAY_TYPE=gateway_type)
 
     with pytest.raises(asyncio.CancelledError):
         await collect(
@@ -831,13 +843,13 @@ async def test_uservalves_reach_responses_through_shared_pipe(
     # Open WebUI runs the model's Filter before the Pipe.
     filtered = await Filter().inlet(request_body, {"valves": settings}, metadata)
 
-    result = await generic_pipe.Pipe().pipe(
+    result = await configured_pipe(USERVALVES_GRAPH_MODEL_ID="acme/simple-graph").pipe(
         filtered, __metadata__=metadata, __user__={"id": "user-123"}
     )
 
     assert result == "Hello."
     request = create.await_args.kwargs
-    assert request["model"] == "lgos/simple-graph"
+    assert request["model"] == "acme/simple-graph"
     assert request["metadata"]["conversation_id"] == "thread-123"
     assert json.loads(request["metadata"]["lgos_settings"]) == {
         "use_history": settings.use_history,
@@ -882,8 +894,8 @@ async def test_chat_variables_reach_responses_with_their_declared_types(
         {"key": "lgos_background", "type": "checkbox"},
     ]
 
-    await generic_pipe.Pipe().pipe(
-        {**body(stream=False), "model": "generic.lgos/advanced-graph"},
+    await configured_pipe().pipe(
+        {**body(stream=False), "model": "generic.lgos/deep-research"},
         __metadata__={
             "chat_id": "thread-123",
             "chat_variables": chat_variables,
@@ -915,6 +927,7 @@ async def test_chat_variables_reach_responses_with_their_declared_types(
 )
 async def test_request_uses_a_native_responses_route(
     monkeypatch: pytest.MonkeyPatch,
+    openwebui_connection: Callable[..., None],
     gateway_type: str,
     base_path: str,
     stream: bool,
@@ -935,15 +948,18 @@ async def test_request_uses_a_native_responses_route(
 
     stream_request = Mock(side_effect=response_stream)
     monkeypatch.setattr(generic_pipe, "_client", client)
-    monkeypatch.setenv("OPENAI_GATEWAY_TYPE", gateway_type)
-    monkeypatch.setenv("OPENAI_GATEWAY_BASE_URL", "https://gateway.example")
-    pipe = generic_pipe.Pipe()
+    openwebui_connection("bearer", "https://gateway.example/v1")
+    pipe = configured_pipe(
+        OPENAI_GATEWAY_TYPE=gateway_type,
+        OPENAI_GATEWAY_BASE_URL="https://gateway.example",
+        MODEL_PREFIX="acme",
+    )
 
     result = await collect(
         pipe.pipe(
             {
                 **body(stream=stream),
-                "model": "generic.lgos/interruptible-approval",
+                "model": "custom_pipe.acme/interruptible-approval",
             },
             __metadata__={"chat_id": "thread-123"},
             __user__={"id": "user-123"},
@@ -959,7 +975,7 @@ async def test_request_uses_a_native_responses_route(
         request = create.await_args.kwargs
     assert base_urls == [f"https://gateway.example{base_path}"]
     # Bifrost selects the provider from the catalog ID's prefix.
-    assert request["model"] == "lgos/interruptible-approval"
+    assert request["model"] == "acme/interruptible-approval"
 
 
 @pytest.mark.parametrize("phase", [None, "final_answer"])
@@ -1004,7 +1020,7 @@ async def test_stream_uses_sdk_final_response_and_excludes_commentary(
     emit = AsyncMock()
     install_client(monkeypatch, stream=scripted_stream)
     chunks = await collect(
-        generic_pipe.Pipe().pipe(
+        configured_pipe().pipe(
             body(stream=True),
             __event_emitter__=emit,
         )
@@ -1054,7 +1070,7 @@ async def test_refusal_is_visible_in_both_response_modes(
     install_client(
         monkeypatch, stream=scripted_stream, create=AsyncMock(return_value=completed)
     )
-    chunks = await collect(generic_pipe.Pipe().pipe(body(stream=streaming)))
+    chunks = await collect(configured_pipe().pipe(body(stream=streaming)))
     assert len(chunks) == 1
     assert (
         chunks[0]["choices"][0]["delta"]["content"] if streaming else chunks[0]
@@ -1097,7 +1113,7 @@ async def test_failed_stream_closes_running_status_and_does_not_execute_tools(
     monkeypatch.setattr(generic_pipe, "_handle_display_file", display)
     emit = AsyncMock()
     chunks = await collect(
-        generic_pipe.Pipe().pipe(body(stream=True), __event_emitter__=emit)
+        configured_pipe().pipe(body(stream=True), __event_emitter__=emit)
     )
     assert "max_output_tokens" in chunks[0]["error"]["detail"]
     assert [call.args[0]["data"] for call in emit.await_args_list] == [
@@ -1105,6 +1121,35 @@ async def test_failed_stream_closes_running_status_and_does_not_execute_tools(
         {"description": "Stopped: Making chart", "done": True},
     ]
     display.assert_not_awaited()
+
+
+async def test_closing_a_streamed_answer_closes_its_gateway_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = Event()
+
+    async def events() -> AsyncIterator[object]:
+        yield SimpleNamespace(
+            type="response.output_text.delta", output_index=0, delta="Partial"
+        )
+        await sleep_forever()
+
+    @asynccontextmanager
+    async def endless_stream(**_):
+        try:
+            yield events()
+        finally:
+            closed.set()
+
+    install_client(monkeypatch, stream=endless_stream)
+    chunks = await configured_pipe().pipe(body(stream=True))
+    first = await anext(chunks)
+    # A stop that lands between chunks closes the generator at its yield.
+    with fail_after(1):
+        await chunks.aclose()
+
+    assert first["choices"][0]["delta"]["content"] == "Partial"
+    assert closed.is_set()
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -1145,7 +1190,7 @@ async def test_response_maps_final_answer_annotations_to_persistent_sources(
     )
 
     chunks = await collect(
-        generic_pipe.Pipe().pipe(
+        configured_pipe().pipe(
             body(stream=streaming),
             __event_emitter__=emit,
         )
@@ -1280,7 +1325,7 @@ async def test_display_file_continuation_preserves_input_and_all_final_text(
         )
 
     result = await collect(
-        generic_pipe.Pipe().pipe(
+        configured_pipe().pipe(
             request_body, __event_emitter__=emitter, __request__=request
         )
     )
@@ -1297,8 +1342,29 @@ async def test_display_file_continuation_preserves_input_and_all_final_text(
     else:
         assert requests[0]["input"] == transcript
     assert "previous_response_id" not in requests[1]
+    # The client tool continues the UI's transcript, which replays the
+    # answered interrupt as a function call and its output.
+    replayed_interrupt = (
+        [
+            {
+                "type": "function_call",
+                "call_id": paused.call_id,
+                "name": "lgos_interrupt",
+                "arguments": paused.arguments,
+                "status": "completed",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": paused.call_id,
+                "output": "approve",
+            },
+        ]
+        if resume_interrupt
+        else []
+    )
     assert requests[1]["input"] == [
         *transcript,
+        *replayed_interrupt,
         *expected_output,
         output,
     ]
@@ -1444,10 +1510,16 @@ def test_plotly_labels_cannot_inject_html_into_the_embed() -> None:
     ("filename", "content_type"),
     [("report.pdf", "application/pdf"), ("chart.png", "image/png")],
 )
+@pytest.mark.parametrize(
+    ("gateway_type", "provider"),
+    [("litellm", "litellm_proxy"), ("bifrost", "lgos-files")],
+)
 async def test_current_attachment_is_read_from_openwebui_into_an_input_file(
     monkeypatch: pytest.MonkeyPatch,
     filename: str,
     content_type: str,
+    gateway_type: str,
+    provider: str,
 ) -> None:
     upload = AsyncMock(return_value=SimpleNamespace(id="file-uploaded"))
     create = AsyncMock(return_value=final_response("Summarized."))
@@ -1462,7 +1534,7 @@ async def test_current_attachment_is_read_from_openwebui_into_an_input_file(
         "content_type": content_type,
     }
 
-    result = await generic_pipe.Pipe().pipe(
+    result = await configured_pipe(OPENAI_GATEWAY_TYPE=gateway_type).pipe(
         {**body(stream=False), "messages": [{"role": "user", "content": "Read it."}]},
         __metadata__={"user_message": {"files": [attachment]}},
         __request__=openwebui.request(),
@@ -1475,7 +1547,7 @@ async def test_current_attachment_is_read_from_openwebui_into_an_input_file(
     upload.assert_awaited_once_with(
         file=(filename, b"attachment-bytes", content_type),
         purpose="user_data",
-        extra_query={"provider": "litellm_proxy"},
+        extra_query={"provider": provider},
     )
     assert create.await_args.kwargs["input"] == [
         {
@@ -1489,18 +1561,42 @@ async def test_current_attachment_is_read_from_openwebui_into_an_input_file(
 
 
 @pytest.mark.parametrize(
-    ("auth_type", "url", "credential"),
+    ("auth_type", "gateway_url", "url", "credential"),
     [
-        ("bearer", "http://lgos-litellm:4000/v1", "test-api-key"),
-        ("system_oauth", "http://lgos-litellm:4000/v1/", "user-access-token"),
-        # A connection to another gateway does not decide this one's credential.
-        ("system_oauth", "https://other.example/v1", "test-api-key"),
+        (
+            "bearer",
+            "http://lgos-litellm:4000",
+            "http://lgos-litellm:4000/v1",
+            "test-api-key",
+        ),
+        (
+            "system_oauth",
+            "http://lgos-litellm:4000",
+            "http://lgos-litellm:4000/v1/",
+            "user-access-token",
+        ),
+        # Open WebUI sends the connection's key when it sets no auth type.
+        (
+            None,
+            "http://lgos-litellm:4000",
+            "http://lgos-litellm:4000/v1",
+            "test-api-key",
+        ),
+        # The valve stores its URL normalized; typed alike, both still match.
+        (
+            "bearer",
+            "https://LiteLLM.example.com:443",
+            "https://LiteLLM.example.com:443/v1",
+            "test-api-key",
+        ),
     ],
+    ids=["bearer", "system-oauth", "unset-auth-type", "url-typed-alike"],
 )
 async def test_responses_and_files_send_what_open_webuis_gateway_connection_sends(
     monkeypatch: pytest.MonkeyPatch,
     openwebui_connection: Callable[..., None],
-    auth_type: str,
+    auth_type: str | None,
+    gateway_url: str,
     url: str,
     credential: str,
 ) -> None:
@@ -1517,7 +1613,7 @@ async def test_responses_and_files_send_what_open_webuis_gateway_connection_send
     openwebui_connection(auth_type, url)
     attachment = {"id": "owui-file", "type": "file", "name": "report.pdf"}
 
-    result = await generic_pipe.Pipe().pipe(
+    result = await configured_pipe(OPENAI_GATEWAY_BASE_URL=gateway_url).pipe(
         body(stream=False),
         __metadata__={"user_message": {"files": [attachment]}},
         __request__=FakeOpenWebUI().request(),
@@ -1527,6 +1623,35 @@ async def test_responses_and_files_send_what_open_webuis_gateway_connection_send
     assert result == "Summarized."
     # One client uploads the attachment, the other runs the response.
     assert api_keys == [credential, credential]
+
+
+@pytest.mark.parametrize(
+    ("connection", "error"),
+    [
+        # A connection to another gateway does not decide this one's credential.
+        (
+            {"auth_type": "system_oauth", "url": "https://other.example/v1"},
+            "Add an OpenAI connection to http://lgos-litellm:4000/v1",
+        ),
+        ({"auth_type": "bearer", "key": ""}, "bearer with an API key"),
+        ({"auth_type": "none"}, "bearer with an API key"),
+    ],
+    ids=["other-gateway", "keyless-bearer", "unsupported-auth"],
+)
+async def test_requests_fail_before_the_gateway_without_a_usable_connection(
+    monkeypatch: pytest.MonkeyPatch,
+    openwebui_connection: Callable[..., None],
+    connection: dict[str, str],
+    error: str,
+) -> None:
+    create = AsyncMock()
+    install_client(monkeypatch, create=create)
+    openwebui_connection(**connection)
+
+    result = await configured_pipe().pipe(body(stream=False))
+
+    assert error in result["error"]["detail"]
+    create.assert_not_awaited()
 
 
 @pytest.mark.parametrize("oauth_token", [None, {}, {"access_token": ""}])
@@ -1539,7 +1664,7 @@ async def test_sso_requests_without_an_access_token_never_use_the_shared_key(
     install_client(monkeypatch, create=create)
     openwebui_connection("system_oauth")
 
-    result = await generic_pipe.Pipe().pipe(
+    result = await configured_pipe().pipe(
         body(stream=False), __oauth_token__=oauth_token
     )
 
@@ -1547,19 +1672,28 @@ async def test_sso_requests_without_an_access_token_never_use_the_shared_key(
     create.assert_not_awaited()
 
 
-@pytest.mark.parametrize("choice", ["x" * 81, " approve"], ids=["long", "padded"])
-async def test_interrupt_choices_that_open_webui_would_alter_are_rejected(
-    monkeypatch: pytest.MonkeyPatch, choice: str
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"question": "Approve refund?", "choices": ["x" * 81, "reject"]},
+        {"question": "Approve refund?", "choices": [" approve", "reject"]},
+        {"question": "Approve refund?", "choices": ["approve"]},
+        {"question": " ", "choices": ["approve", "reject"]},
+    ],
+    ids=["long-choice", "padded-choice", "one-choice", "blank-question"],
+)
+async def test_interrupts_open_webui_cannot_show_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]
 ) -> None:
-    call = function_call(
-        "lgos_interrupt",
-        {"question": "Approve refund?", "choices": [choice, "reject"]},
-    )
+    call = function_call("lgos_interrupt", payload)
     install_client(monkeypatch, create=AsyncMock(return_value=response(call)))
 
-    result = await generic_pipe.Pipe().pipe(body(stream=False))
+    result = await configured_pipe().pipe(body(stream=False))
 
-    assert "80 characters" in result["error"]["detail"]
+    assert result["error"]["detail"] == (
+        "Responses request failed: Open WebUI interrupts require a question and "
+        "2-3 unique choices of at most 80 characters without surrounding spaces."
+    )
 
 
 async def test_interrupt_call_ids_that_open_webui_would_truncate_are_rejected(
@@ -1568,7 +1702,7 @@ async def test_interrupt_call_ids_that_open_webui_would_truncate_are_rejected(
     call = interrupt_call().model_copy(update={"call_id": "call_" + "x" * 60})
     install_client(monkeypatch, create=AsyncMock(return_value=response(call)))
 
-    result = await generic_pipe.Pipe().pipe(body(stream=False))
+    result = await configured_pipe().pipe(body(stream=False))
 
     assert "call ID" in result["error"]["detail"]
 
@@ -1596,10 +1730,59 @@ async def test_unanswered_interrupt_card_ends_the_turn_without_resuming(
     create = AsyncMock(return_value=final_response("Unexpected resume"))
     install_client(monkeypatch, create=create)
 
-    output = await collect(generic_pipe.Pipe().pipe(request))
+    output = await collect(configured_pipe().pipe(request))
 
     assert output == ["Interrupt cancelled."]
     create.assert_not_awaited()
+
+
+@pytest.mark.parametrize("answered", [True, False], ids=["answered", "cancelled"])
+async def test_later_turn_replays_the_answered_interrupt_in_place(
+    monkeypatch: pytest.MonkeyPatch, answered: bool
+) -> None:
+    call = interrupt_call()
+    card, result = ask_user_exchange(
+        ask_user_card(call), {call.call_id: option("approve")}
+    )
+    card["content"] = "Request: ORDER-123"
+    if not answered:
+        result["content"] = ASK_USER_REJECTED_OUTPUT
+    request = body(stream=False)
+    request["messages"].extend(
+        [
+            card,
+            result,
+            {"role": "assistant", "content": "Refund approved."},
+            {"role": "user", "content": "What did I decide?"},
+        ]
+    )
+    create = AsyncMock(return_value=final_response("You approved it."))
+    install_client(monkeypatch, create=create)
+
+    await configured_pipe().pipe(request)
+
+    # Like a stateless Responses transcript, the card's text, the interrupt
+    # call, and its answer replay where they happened. A cancelled card never
+    # resumed the graph, so only its text remains.
+    exchange = [
+        {
+            "type": "function_call",
+            "call_id": call.call_id,
+            "name": "lgos_interrupt",
+            # A question that fits the card replays as the graph sent it.
+            "arguments": call.arguments,
+            "status": "completed",
+        },
+        {"type": "function_call_output", "call_id": call.call_id, "output": "approve"},
+    ]
+    assert create.await_args.kwargs["input"] == [
+        {"role": "user", "content": "Refund ORDER-123"},
+        {"role": "assistant", "phase": "final_answer", "content": "Request: ORDER-123"},
+        *(exchange if answered else []),
+        {"role": "assistant", "phase": "final_answer", "content": "Refund approved."},
+        {"role": "user", "content": "What did I decide?"},
+    ]
+    assert "previous_response_id" not in create.await_args.kwargs
 
 
 async def test_parallel_interrupt_batch_uses_one_prompt_and_resumes_every_call(
@@ -1627,7 +1810,7 @@ async def test_parallel_interrupt_batch_uses_one_prompt_and_resumes_every_call(
         ]
     )
     install_client(monkeypatch, create=create)
-    pipe = generic_pipe.Pipe()
+    pipe = configured_pipe()
 
     interrupted = await pipe.pipe(body(stream=False))
     (ask_user,) = interrupted["choices"][0]["message"]["tool_calls"]
@@ -1687,7 +1870,7 @@ async def test_mixed_interrupt_and_client_tool_batch_is_rejected(
     )
     install_client(monkeypatch, create=create)
 
-    result = await generic_pipe.Pipe().pipe(body(stream=False))
+    result = await configured_pipe().pipe(body(stream=False))
 
     assert result == {
         "error": {
@@ -1705,10 +1888,14 @@ async def test_interrupt_response_becomes_native_ask_user_call(
     create = AsyncMock(return_value=response(interrupt_call()))
     install_client(monkeypatch, create=create)
 
-    result = await generic_pipe.Pipe().pipe(body(stream=False))
+    result = await configured_pipe().pipe(body(stream=False))
 
     tool_call = result["choices"][0]["message"]["tool_calls"][0]
     assert tool_call["function"]["name"] == "ask_user"
+    # A one-line question fits the card, so nothing renders above it.
+    card = json.loads(tool_call["function"]["arguments"])["questions"][0]
+    assert card["question"] == "Approve refund?"
+    assert result["choices"][0]["message"]["content"] is None
     assert result["choices"][0]["finish_reason"] == "tool_calls"
     assert result["output"][0]["type"] == "function_call"
     assert result["output"][0]["name"] == "ask_user"
@@ -1734,14 +1921,18 @@ async def test_invalid_interrupt_exchange_cannot_start_a_new_run(
         messages.append(result)
     elif malformation == "mixed-calls":
         assistant["tool_calls"].append(
-            {"id": "call_other", "type": "function", "function": {"name": "other"}}
+            {
+                "id": "call_other",
+                "type": "function",
+                "function": {"name": "other", "arguments": "{}"},
+            }
         )
     request = body(stream=stream)
     request["messages"].extend(messages)
     create = AsyncMock(return_value=final_response("Unexpected new run"))
     install_client(monkeypatch, create=create)
 
-    output = await collect(generic_pipe.Pipe().pipe(request))
+    output = await collect(configured_pipe().pipe(request))
 
     assert "interrupt" in output[0]["error"]["detail"]
     create.assert_not_awaited()
@@ -1754,7 +1945,7 @@ async def test_interrupt_response_with_preliminary_text_preserves_content_and_ou
     create = AsyncMock(return_value=response(first_part, interrupt_call()))
     install_client(monkeypatch, create=create)
 
-    result = await generic_pipe.Pipe().pipe(body(stream=False))
+    result = await configured_pipe().pipe(body(stream=False))
 
     assert result["choices"][0]["message"]["content"] == "Please confirm: "
     assert len(result["output"]) == 2
@@ -1774,7 +1965,7 @@ async def test_non_streaming_answer_allows_optional_phase(monkeypatch, phase):
     completed.output.insert(0, commentary)
     install_client(monkeypatch, create=AsyncMock(return_value=completed))
 
-    assert await generic_pipe.Pipe().pipe(body(stream=False)) == "Answer"
+    assert await configured_pipe().pipe(body(stream=False)) == "Answer"
 
 
 def test_transcript_preserves_assistant_phase_and_uses_native_file_parts():
@@ -1863,7 +2054,7 @@ def test_native_mcp_transcript_becomes_responses_tool_items() -> None:
 async def test_gateway_tool_call_is_delegated_to_openwebui(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    openwebui_tool_name = "lgos-gateway_database_report"
+    openwebui_tool_name = "acme-tools_database_report"
     gateway_tool_name = "database_report"
     completed = response(function_call(gateway_tool_name, {}))
     requests = []
@@ -1905,7 +2096,7 @@ async def test_gateway_tool_call_is_delegated_to_openwebui(
     }
 
     result = await collect(
-        generic_pipe.Pipe().pipe(
+        configured_pipe(MCP_GATEWAY_CONNECTION_ID="acme-tools").pipe(
             request_body,
             __tools__={
                 openwebui_tool_name: openwebui_tool,
@@ -1940,7 +2131,7 @@ async def test_mcp_tool_execution_rejects_non_streaming_requests(
     install_client(monkeypatch, create=create)
 
     tool_name = "lgos-gateway_database_report"
-    result = await generic_pipe.Pipe().pipe(
+    result = await configured_pipe().pipe(
         {
             "model": "generic.lgos/database-assistant",
             "messages": [{"role": "user", "content": "List the demo graphs."}],

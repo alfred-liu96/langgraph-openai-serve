@@ -1221,20 +1221,6 @@ wheels = [
 ]
 
 [[package]]
-name = "langchain"
-version = "1.4.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "langchain-core" },
-    { name = "langgraph" },
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/aa/0fcaf5d7dbebcf7d0eb74293dca5aee6f0558242731f4dee4a800cc2431d/langchain-1.4.3.tar.gz", hash = "sha256:aed5c1a7cd581f70ddc076b75fdbcbae8031b8373983f86efd287aa70798abc2", size = 738607, upload-time = "2026-09-28T20:17:24.38Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/03/8cc027f9d297473de94f134546dae2bfca255161ebbda988522fc509e1d5/langchain-1.4.3-py3-none-any.whl", hash = "sha256:0334066939dd1c7551889727ed2d09a72dea7a6aed2193ffb61817fb658d8921", size = 164708, upload-time = "2026-09-28T20:17:22.978Z" },
-]
-
-[[package]]
 name = "langchain-core"
 version = "1.6.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1269,7 +1255,7 @@ wheels = [
 
 [[package]]
 name = "langfuse"
-version = "4.17.0"
+version = "5.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -1282,9 +1268,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/96/93/30c97995ad3b24c8dfd45ff02d80f491bd5e103fae432a1872db32e16823/langfuse-4.17.0.tar.gz", hash = "sha256:f8cccfc49d9839969e962ffb88ce49cf531a8cbf31507eb99e43668fb5b3b5da", size = 394423, upload-time = "2026-10-05T08:53:34.777Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/51/86561c2059fb9d81c72100f6b446bc8c3b863624051ee934169e2d56073f/langfuse-5.0.1.tar.gz", hash = "sha256:8435dc7728cb3439326ccbb59938eb5709407331b59470f10bfd00557bac2fa0", size = 364998, upload-time = "2026-10-14T10:58:16.206Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9b/e0/1eb38746bb1fbb925eb90a1a501abb15c9eaa5ecf1818c94943360fa563e/langfuse-4.17.0-py3-none-any.whl", hash = "sha256:02560e12d715dd24f239c240886ee197b9e62f4a808f06de77193356c56bf57a", size = 708167, upload-time = "2026-10-05T08:53:35.989Z" },
+    { url = "https://files.pythonhosted.org/packages/61/bc/20746ca06afd14f731a73c4edc4a7be5cb5824d5f432d93132e931e318e6/langfuse-5.0.1-py3-none-any.whl", hash = "sha256:2c7aeb95fec7915da3bc005cf4dfc251a1c9d4eb28384161bbbf9447aacf4c44", size = 635262, upload-time = "2026-10-14T10:58:14.643Z" },
 ]
 
 [[package]]
@@ -1375,7 +1361,6 @@ postgres = [
 server = [
     { name = "fastapi" },
     { name = "hatchet-sdk", extra = ["otel"] },
-    { name = "langchain" },
     { name = "langfuse" },
     { name = "langgraph-checkpoint-postgres" },
     { name = "opentelemetry-distro" },
@@ -1386,10 +1371,10 @@ server = [
     { name = "opentelemetry-sdk" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
+    { name = "python-dotenv" },
     { name = "structlog" },
 ]
 tracing = [
-    { name = "langchain" },
     { name = "langfuse" },
     { name = "opentelemetry-sdk" },
 ]
@@ -1426,8 +1411,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.142.2" },
     { name = "hatchet-sdk", marker = "extra == 'hatchet'", specifier = ">=1.40.3,<2" },
     { name = "hatchet-sdk", extras = ["otel"], marker = "extra == 'server'", specifier = ">=1.40.3,<2" },
-    { name = "langchain", marker = "extra == 'tracing'", specifier = ">=1.2.11" },
-    { name = "langfuse", marker = "extra == 'tracing'", specifier = ">=4.0.0,<5.0.0" },
+    { name = "langfuse", marker = "extra == 'tracing'", specifier = ">=5.0.1,<6.0.0" },
     { name = "langgraph", specifier = ">=1.2.6,<2.0.0" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'postgres'", specifier = ">=3.1.0,<4" },
     { name = "langgraph-openai-serve", extras = ["hatchet", "postgres", "tracing"], marker = "extra == 'server'" },
@@ -1444,6 +1428,7 @@ requires-dist = [
     { name = "psycopg-pool", marker = "extra == 'postgres'", specifier = ">=3.3.0,<4" },
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pydantic-settings", specifier = ">=2.9.0" },
+    { name = "python-dotenv", marker = "extra == 'server'", specifier = ">=0.21.0" },
     { name = "structlog", marker = "extra == 'server'", specifier = ">=26.1.0,<27" },
     { name = "uvicorn", specifier = ">=0.51.0" },
 ]
@@ -3786,7 +3771,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/00/93/86a85b421dd27cad4414f3a8775c3cd72676f2d6df0816e059a9acd87337/zensical-0.0.68-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:61fe8425f22a36dfd34962811f651c0a69faaf39e38518c90f55c09b381974df", size = 18070895, upload-time = "2026-10-05T15:41:14.36Z" },
     { url = "https://files.pythonhosted.org/packages/1f/80/a4ff13b5ba86dd4498d7b210e5137abbeb924d318297536b2c7a89514ebf/zensical-0.0.68-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:5b40756883e6ebe6638f91fffde6146a894731d52aee965d514202b7648be671", size = 17603220, upload-time = "2026-10-05T15:41:17.573Z" },
     { url = "https://files.pythonhosted.org/packages/9a/21/c60fdb42ed358b509a2f688a34cc1ee462272b2ebbf8c94f71d824b77c8e/zensical-0.0.68-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c21a3d5e06e7c9c7761fbd7c9322cd6a69c4ea6d26db98e8110ac7bfdb70c921", size = 18110355, upload-time = "2026-10-05T15:41:20.528Z" },
-    { url = "https://files.pythonhosted.org/packages/31/60/2611203cd0ad006ccbd6c4889f4745beecb76115fdc6ee6ea1435c0c1261/zensical-0.0.68-cp311-abi3-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:46e5600dc78ca811f0079c3766038a46419bf6e9bdba30e3e1302a13b8ae9b9b", size = 18045909, upload-time = "2026-10-05T15:41:23.132Z" },
     { url = "https://files.pythonhosted.org/packages/1f/67/b2f1d61b312ffd9f8f37754f931a089967f75c929e3b0dcc2947f2692bd3/zensical-0.0.68-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:09cb5caf676375d1586e1d6d114e9b6812e0f153120a477246b80b1478243b0e", size = 18586515, upload-time = "2026-10-05T15:41:25.698Z" },
     { url = "https://files.pythonhosted.org/packages/04/02/552b3c461514ae53379b34f79adae303cfc08745614b2abe7667085b9014/zensical-0.0.68-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:ac5015e27c17e8ab02c83b36858c56808dde7891a50c70a9498dbc3edd882874", size = 18276394, upload-time = "2026-10-05T15:41:28.365Z" },
     { url = "https://files.pythonhosted.org/packages/3c/8a/76245b9a2053c2466662a3891730d081a8c9349cc67bc147ec394bc6cd9a/zensical-0.0.68-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:d24a7caf0c14e5e3fb4ff1521ee5836c7fbf7767f59d3ecf2d9c01fd69ccfc2c", size = 18844257, upload-time = "2026-10-05T15:41:31.294Z" },

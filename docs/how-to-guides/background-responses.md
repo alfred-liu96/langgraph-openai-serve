@@ -126,11 +126,15 @@ a foreground turn. Answer it with `previous_response_id` and
 
 ```python
 answer = await client.responses.create(
-    model="advanced-graph",
+    model="deep-research",
     background=True,
     previous_response_id=paused.id,
     input=[
-        {"type": "function_call_output", "call_id": call.call_id, "output": "approve"}
+        {
+            "type": "function_call_output",
+            "call_id": call.call_id,
+            "output": "Start research",
+        }
         for call in paused.output
         if call.type == "function_call" and call.name == "lgos_interrupt"
     ],
@@ -236,8 +240,9 @@ An engine must:
 - give each run a UUID; the public Response ID embeds it;
 - start at most one run per `job.idempotency_key` and return that run again for
   a repeated key;
-- execute a run with `execute_background_job(job, run_id, registry)` and keep the
-  returned Response JSON as the run's result;
+- execute a run with `execute_background_job(job, engine_run_id, registry)`,
+  passing the engine's run ID, and keep the returned Response JSON as the run's
+  result;
 - report `queued`, `in_progress`, `completed`, `failed`, or `cancelled`.
 
 ## Gateway Compatibility
